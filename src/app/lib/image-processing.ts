@@ -1517,7 +1517,11 @@ const sleep = (ms: number, signal?: AbortSignal) =>
       return;
     }
     if (ms <= 0) {
-      resolve();
+      const timer = setTimeout(resolve, 0);
+      signal?.addEventListener('abort', () => {
+        clearTimeout(timer);
+        reject(new DOMException('Drawing aborted', 'AbortError'));
+      }, { once: true });
       return;
     }
     const timer = setTimeout(resolve, ms);
@@ -1615,8 +1619,8 @@ export async function applyFourierExpressionsProgressively(
 
   const {
     clearFirst = true,
-    contourDelayMs = 8,
-    fillDelayMs = 4,
+    contourDelayMs = 1,
+    fillDelayMs = 0,
     onProgress,
     signal,
   } = options;
