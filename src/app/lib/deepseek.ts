@@ -20,7 +20,6 @@
  *   callClaudeStream()       — Claude 专用流式调用
  *   callDeepSeekSolveStream() — 解题模式（OCR 识别题目 → AI 流式解答）
  *   callOCRApi()             — 图片文字识别（OCR.space 服务）
- *   训练数据 CRUD            — 增删改查 Few-Shot 训练示例
  *
  * 【什么是"流式"（Stream）？】
  * 普通调用：等 AI 把所有文字全部生成完，一次性返回（用户等待时间长）
@@ -38,7 +37,6 @@ import {
   detectProviderFromKey,
   getProviderById,
 } from './api-providers';
-import { formatTrainingForPrompt } from './training-data';
 
 export type ApiProvider = ApiProviderId;
 export { DEFAULT_MODELS, CLAUDE_MODELS, API_ENDPOINTS };
@@ -327,21 +325,13 @@ const PROMPTS: Record<string, string> = {
 };
 
 /**
- * getSystemPrompt — 获取完整的系统提示词
- *
- * 在基础提示词的基础上，自动追加用户添加的训练数据（Few-Shot 示例）。
- * 训练数据注入到末尾，格式如：
- *   示例 1:
- *   用户: 画一个圆
- *   标准回答: <DESMOS>x^2+y^2=1</DESMOS>
+ * getSystemPrompt — 获取系统提示词（开发者可在本文件 PROMPT_ZH / PROMPT_EN 中直接维护）
  *
  * @param lang - 语言代码（'zh' 或 'en'），默认 'zh'
- * @returns 完整的系统提示词字符串
+ * @returns 系统提示词字符串
  */
 export const getSystemPrompt = (lang: string = 'zh') => {
-  const base = PROMPTS[lang] || PROMPTS['zh'];
-  const l = lang === 'en' ? 'en' : 'zh';
-  return base + formatTrainingForPrompt(l);
+  return PROMPTS[lang] || PROMPTS['zh'];
 };
 
 // ─── 非流式 AI 调用 ──────────────────────────────────────────────────────────
