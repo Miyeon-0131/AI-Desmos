@@ -48,8 +48,8 @@
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/your-username/ai-desmos.git
-cd ai-desmos
+git clone https://github.com/Miyeon-0131/AI-Desmos.git
+cd AI-Desmos
 ```
 
 ### 2. 安装依赖
@@ -156,6 +156,7 @@ AI Desmos/
 
 * **项目作者**：灵俊宇
 * **电子邮箱**：[LingJunYu20081201@gmail.com](mailto:LingJunYu20081201@gmail.com)
+* **GitHub 仓库**：[https://github.com/Miyeon-0131/AI-Desmos](https://github.com/Miyeon-0131/AI-Desmos)
 * **在线体验**：[https://ai-desmos.online](https://ai-desmos.online)
 
 ---
