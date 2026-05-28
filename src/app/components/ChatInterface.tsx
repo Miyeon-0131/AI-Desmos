@@ -46,7 +46,7 @@ import React, { useState, useRef, useEffect } from 'react';
 // Pencil=铅笔  GraduationCap=学士帽（解题）  ChevronRight=右箭头  Lock=锁
 // Zap=闪电（试用）  ExternalLink=外部链接  ShieldCheck=盾牌+对勾（安全）
 // MousePointer2=鼠标指针（长手模式）  CloudOff=断网图标  RefreshCcw=刷新
-import { X, Send, Paperclip, Bot, User, Loader2, Trash2, Layers, HelpCircle, BookOpen, MessageSquareX, ScanEye, Share, Settings, Key, Globe, Pen, ImageIcon, Sigma, Eye, Upload, Lightbulb, Wrench, Pencil, GraduationCap, ChevronRight, Lock, Zap, ExternalLink, ShieldCheck, MousePointer2, CloudOff, RefreshCcw, Square, Check } from 'lucide-react';
+import { X, Send, Paperclip, Bot, User, Loader2, Trash2, Layers, HelpCircle, BookOpen, MessageSquareX, ScanEye, Share, Settings, Key, Globe, Pen, ImageIcon, Sigma, Eye, Upload, Lightbulb, Wrench, Pencil, GraduationCap, ChevronRight, Lock, Zap, ExternalLink, ShieldCheck, MousePointer2, CloudOff, RefreshCcw, Square, Check, Plus } from 'lucide-react';
 
 // 工具函数：Desmos 流式注入
 import { processDesmosStreamChunk, createDesmosInjectState } from '../lib/utils';
@@ -73,6 +73,11 @@ import { UserGuideContent } from './UserGuideContent';
 
 // 国际化（中英双语）
 import { useLanguage, Language, translations, detectReplyLanguage } from '../lib/i18n';
+import {
+  loadTrainingData,
+  saveTrainingData,
+  type TrainingExample,
+} from '../lib/training-data';
 
 // ─── 类型定义 ────────────────────────────────────────────────────────────────
 
@@ -412,6 +417,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ calculator, onClos
   /** showSettings — 是否显示设置面板（API Key、模型、语言等） */
   const [showSettings, setShowSettings] = useState(false);
 
+  /** 用户自定义 Few-Shot 训练示例（注入系统提示，不事后改写 AI 回复） */
+  const [trainingExamples, setTrainingExamples] = useState<TrainingExample[]>(() => loadTrainingData());
+  const [showTrainingForm, setShowTrainingForm] = useState(false);
+  const [trainingDraft, setTrainingDraft] = useState({ question: '', answer: '' });
+  const trainingImportRef = useRef<HTMLInputElement>(null);
+
   /** exportScript — 导出按钮生成的 JavaScript 代码（用于粘贴到 Desmos 官网控制台） */
   const [exportScript, setExportScript] = useState('');
 
@@ -621,7 +632,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ calculator, onClos
     localStorage.setItem('claude_long_hand', claudeLongHand ? '1' : '0');
     localStorage.removeItem('deepseek_api_key');
     localStorage.removeItem('claude_api_key');
-    localStorage.removeItem('desmos_training_data');
     setShowSettings(false);
     alert(t('settings_saved_ok'));
   };
@@ -633,12 +643,72 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ calculator, onClos
     localStorage.removeItem('deepseek_api_key');
     localStorage.removeItem('claude_api_key');
     localStorage.removeItem('claude_long_hand');
-    localStorage.removeItem('desmos_training_data');
     setCustomApiKey('');
     setApiProvider('deepseek');
     setApiModel('deepseek-chat');
     setClaudeLongHand(false);
     alert(t('settings_reset_ok'));
+  };
+
+  const persistTrainingExamples = (next: TrainingExample[]) => {
+    setTrainingExamples(next);
+    saveTrainingData(next);
+  };
+
+  const handleAddTrainingExample = () => {
+    const question = trainingDraft.question.trim();
+    const answer = trainingDraft.answer.trim();
+    if (!question || !answer) return;
+    persistTrainingExamples([
+      ...trainingExamples,
+      { id: Date.now().toString(), question, answer },
+    ]);
+    setTrainingDraft({ question: '', answer: '' });
+    setShowTrainingForm(false);
+  };
+
+  const handleDeleteTrainingExample = (id: string) => {
+    if (!confirm(t('training_delete_confirm'))) return;
+    persistTrainingExamples(trainingExamples.filter(item => item.id !== id));
+  };
+
+  const handleExportTraining = () => {
+    const blob = new Blob([JSON.stringify(trainingExamples, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'ai-desmos-training.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportTraining = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result)) as unknown;
+        if (!Array.isArray(parsed)) throw new Error('invalid');
+        const imported: TrainingExample[] = parsed
+          .filter(
+            (item): item is TrainingExample =>
+              item != null &&
+              typeof item === 'object' &&
+              typeof (item as TrainingExample).question === 'string' &&
+              typeof (item as TrainingExample).answer === 'string',
+          )
+          .map((item, index) => ({
+            id: typeof item.id === 'string' ? item.id : `import-${Date.now()}-${index}`,
+            question: item.question.trim(),
+            answer: item.answer.trim(),
+          }))
+          .filter(item => item.question && item.answer);
+        persistTrainingExamples(imported);
+        alert(t('training_imported', { count: String(imported.length) }));
+      } catch {
+        alert(t('err_system'));
+      }
+    };
+    reader.readAsText(file);
   };
 
   /**
@@ -2240,6 +2310,115 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ calculator, onClos
                             {t('settings_reset')}
                         </button>
                     </div>
+
+                    <div className="border-t border-gray-100" />
+
+                    {/* ── Training Data (Few-Shot) ── */}
+                    <section className="p-4 rounded-xl border border-violet-100 bg-violet-50/50 text-sm space-y-3 min-w-0">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <p className="font-bold text-violet-900 flex items-center gap-2">
+                                    <GraduationCap size={15} className="text-violet-600" />
+                                    {t('training_title')}
+                                </p>
+                                <p className="text-xs text-violet-800/80 mt-1 leading-relaxed">{t('training_desc')}</p>
+                            </div>
+                            <span className="shrink-0 px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 text-[10px] font-bold">
+                                {t('training_count', { count: String(trainingExamples.length) })}
+                            </span>
+                        </div>
+
+                        {trainingExamples.length === 0 ? (
+                            <p className="text-xs text-violet-700/70">{t('training_empty')}</p>
+                        ) : (
+                            <div className="space-y-2 max-h-48 overflow-y-auto">
+                                {trainingExamples.map(item => (
+                                    <div key={item.id} className="rounded-lg border border-violet-100 bg-white p-3 space-y-1">
+                                        <p className="text-xs font-semibold text-gray-800 line-clamp-2">{item.question}</p>
+                                        <p className="text-[11px] text-gray-500 line-clamp-3 whitespace-pre-wrap">{item.answer}</p>
+                                        <button
+                                            type="button"
+                                            onClick={() => handleDeleteTrainingExample(item.id)}
+                                            className="text-[11px] text-red-500 hover:text-red-700 flex items-center gap-1"
+                                        >
+                                            <Trash2 size={12} /> {t('training_delete')}
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {showTrainingForm ? (
+                            <div className="space-y-2 rounded-lg border border-violet-200 bg-white p-3">
+                                <input
+                                    value={trainingDraft.question}
+                                    onChange={e => setTrainingDraft(prev => ({ ...prev, question: e.target.value }))}
+                                    placeholder={t('training_question_placeholder')}
+                                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-violet-200"
+                                />
+                                <textarea
+                                    value={trainingDraft.answer}
+                                    onChange={e => setTrainingDraft(prev => ({ ...prev, answer: e.target.value }))}
+                                    placeholder={t('training_answer_placeholder')}
+                                    rows={4}
+                                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-violet-200 resize-y min-h-[96px]"
+                                />
+                                <div className="flex gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={handleAddTrainingExample}
+                                        className="flex-1 py-2 rounded-lg bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700"
+                                    >
+                                        {t('training_save')}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => { setShowTrainingForm(false); setTrainingDraft({ question: '', answer: '' }); }}
+                                        className="px-4 py-2 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50"
+                                    >
+                                        {t('training_cancel')}
+                                    </button>
+                                </div>
+                            </div>
+                        ) : (
+                            <button
+                                type="button"
+                                onClick={() => setShowTrainingForm(true)}
+                                className="w-full py-2.5 rounded-lg border border-dashed border-violet-300 text-violet-700 text-sm font-medium hover:bg-violet-100/60 flex items-center justify-center gap-1.5"
+                            >
+                                <Plus size={15} /> {t('training_add')}
+                            </button>
+                        )}
+
+                        <div className="flex gap-2">
+                            <button
+                                type="button"
+                                onClick={handleExportTraining}
+                                disabled={trainingExamples.length === 0}
+                                className="flex-1 py-2 rounded-lg border border-violet-200 bg-white text-violet-700 text-xs font-semibold hover:bg-violet-50 disabled:opacity-40"
+                            >
+                                {t('training_export')}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => trainingImportRef.current?.click()}
+                                className="flex-1 py-2 rounded-lg border border-violet-200 bg-white text-violet-700 text-xs font-semibold hover:bg-violet-50"
+                            >
+                                {t('training_import')}
+                            </button>
+                            <input
+                                ref={trainingImportRef}
+                                type="file"
+                                accept="application/json,.json"
+                                className="hidden"
+                                onChange={e => {
+                                    const file = e.target.files?.[0];
+                                    if (file) handleImportTraining(file);
+                                    e.target.value = '';
+                                }}
+                            />
+                        </div>
+                    </section>
 
                     <div className="border-t border-gray-100" />
 

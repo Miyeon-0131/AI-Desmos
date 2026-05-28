@@ -419,7 +419,7 @@ export const translations = {
     // ── 训练数据（Few-Shot 学习）─────────────────────────────────────────────
     // Few-Shot：通过给 AI 几个示例，让 AI 理解你想要的回答风格
     training_title: '训练数据',
-    training_desc: '添加示范问答对来提高 AI 回答精度。AI 会参考这些示例来理解您期望的回答风格。',
+    training_desc: '添加示范问答对，注入到 AI 系统提示中作为参考。系统不会事后强制改写 AI 的回复，请通过优质示范帮助 AI 学会正确写法。',
     training_add: '添加示例',
     training_question: '用户问题',
     training_answer: '标准回答',
@@ -427,6 +427,7 @@ export const translations = {
     training_answer_placeholder: '例：定积分负函数用 f(x)\\le y\\le 0；<DESMOS>f(x)=-x^2</DESMOS><DESMOS>f(x)\\le y\\le 0\\left\\{0\\le x\\le 1\\right\\}</DESMOS><DESMOS>\\int_{0}^{1} (-x^2) dx</DESMOS>',
     training_save: '保存',
     training_cancel: '取消',
+    training_delete: '删除',
     training_empty: '暂无训练数据。点击上方按钮添加示例问答对。',
     training_count: '{count} 条训练数据',    // {count} 会被替换成实际数量
     training_delete_confirm: '确认删除此训练数据？',
@@ -790,7 +791,7 @@ export const translations = {
 
     // ── 训练数据（Few-Shot 学习）─────────────────────────────────────────────
     training_title: 'Training Data',
-    training_desc: 'Add example Q&A pairs to improve AI answer accuracy. AI will reference these examples to match your expected response style.',
+    training_desc: 'Add example Q&A pairs into the AI system prompt as references. The app does NOT forcibly rewrite AI replies afterward — teach better answers with good examples.',
     training_add: 'Add Example',
     training_question: 'User Question',
     training_answer: 'Standard Answer',
@@ -798,6 +799,7 @@ export const translations = {
     training_answer_placeholder: 'e.g. negative integral: f(x)\\le y\\le 0; <DESMOS>f(x)=-x^2</DESMOS><DESMOS>f(x)\\le y\\le 0\\left\\{0\\le x\\le 1\\right\\}</DESMOS><DESMOS>\\int_{0}^{1} (-x^2) dx</DESMOS>',
     training_save: 'Save',
     training_cancel: 'Cancel',
+    training_delete: 'Delete',
     training_empty: 'No training data yet. Click the button above to add example Q&A pairs.',
     training_count: '{count} training examples',
     training_delete_confirm: 'Delete this training example?',

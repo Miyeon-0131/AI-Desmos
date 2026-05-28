@@ -38,6 +38,7 @@ import {
   detectProviderFromKey,
   getProviderById,
 } from './api-providers';
+import { formatTrainingForPrompt } from './training-data';
 
 export type ApiProvider = ApiProviderId;
 export { DEFAULT_MODELS, CLAUDE_MODELS, API_ENDPOINTS };
@@ -121,6 +122,7 @@ const PROMPT_ZH = [
   '    - <DESMOS>...</DESMOS> 是**仅用于注入画板**的机器分隔符，**不会**显示给用户；回复正文中**禁止**写出 DESMOS、标签名或「见上方公式框」等字样。',
   '    - 标签必须**无空格**连续书写：<DESMOS>（禁止 < DESMOS >）；标签内**禁止换行**。',
   '    - 标签内写 **Desmos 语法**（\\\\le、\\\\frac，不要用 $ 包裹）；用户看到的蓝框由系统自动排版为 LaTeX，你无需在标签内写 LaTeX 修饰。',
+  '    - **系统不会事后改写你的 <DESMOS> 内容**；请参考下方示范与规则，一次输出正确语法。',
   '',
   // 变量处理规则（防止 AI 乱生成没有赋值的变量）
   '**变量处理规则：**',
@@ -240,6 +242,7 @@ const PROMPT_EN = [
   '    - <DESMOS>...</DESMOS> is **machine-only** for the graph — **never shown** to the user. Do NOT mention DESMOS, tag names, or "formula box" in prose.',
   '    - Tags must be **exact**: <DESMOS> with **no spaces**; **no line breaks** inside tags.',
   '    - Inside tags: **Desmos syntax** (\\\\le, \\\\frac, no $). The blue chat card is auto-rendered as LaTeX by the app.',
+  '    - **Your <DESMOS> output is NOT rewritten afterward**; follow the examples and rules below and get syntax right on the first try.',
   '',
   '**Variable Handling:**',
   '1.  **Reuse Variables**: If a variable (e.g., a, b) exists in the context, reuse it unless the user asks to change or reset it.',
@@ -336,7 +339,9 @@ const PROMPTS: Record<string, string> = {
  * @returns 完整的系统提示词字符串
  */
 export const getSystemPrompt = (lang: string = 'zh') => {
-  return PROMPTS[lang] || PROMPTS['zh'];
+  const base = PROMPTS[lang] || PROMPTS['zh'];
+  const l = lang === 'en' ? 'en' : 'zh';
+  return base + formatTrainingForPrompt(l);
 };
 
 // ─── 非流式 AI 调用 ──────────────────────────────────────────────────────────
