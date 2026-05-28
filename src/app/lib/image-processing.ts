@@ -1615,8 +1615,8 @@ export async function applyFourierExpressionsProgressively(
 
   const {
     clearFirst = true,
-    contourDelayMs = 32,
-    fillDelayMs = 16,
+    contourDelayMs = 8,
+    fillDelayMs = 4,
     onProgress,
     signal,
   } = options;

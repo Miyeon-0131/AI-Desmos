@@ -794,7 +794,6 @@ function App() {
         }
         await applyFourierExpressionsProgressively(calculator, allExpressions, {
           clearFirst: false,
-          contourDelayMs: 36,
           signal: controller.signal,
         });
       }
