@@ -1511,7 +1511,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ calculator, onClos
   };
 
   return (
-    <div className="flex flex-col h-full w-full bg-white font-sans relative">
+    <div className="flex flex-col h-full w-full min-w-0 bg-white font-sans relative">
         {/* Header */}
         <div className="flex flex-wrap items-center justify-between px-3 py-2 border-b border-gray-100 bg-white/80 backdrop-blur-md sticky top-0 z-10 shrink-0 gap-x-2 gap-y-1">
             <div className="flex items-center gap-2 text-gray-800 shrink-0 flex-wrap">
@@ -2053,15 +2053,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ calculator, onClos
                             {t('invite_code_success')}
                         </div>
                     ) : (
-                        <div className="w-full space-y-2">
-                            <div className="flex gap-2">
+                        <div className="w-full min-w-0 space-y-2 @container">
+                            <div className="flex flex-col @[220px]:flex-row gap-2 w-full min-w-0">
                                 <input
                                     type="text"
                                     value={inviteCodeInput}
                                     onChange={e => { setInviteCodeInput(e.target.value); setInviteCodeStatus('idle'); }}
                                     onKeyDown={e => e.key === 'Enter' && handleRedeemInviteCode()}
                                     placeholder={t('invite_code_placeholder')}
-                                    className={`flex-1 px-3 py-2.5 rounded-xl border text-sm focus:outline-none focus:ring-2 transition-colors ${
+                                    className={`w-full min-w-0 @[220px]:flex-1 px-3 py-2.5 rounded-xl border text-sm focus:outline-none focus:ring-2 transition-colors ${
                                         inviteCodeStatus === 'error'
                                         ? 'border-red-300 bg-red-50 focus:ring-red-200'
                                         : 'border-gray-200 bg-gray-50 focus:ring-blue-200'
@@ -2070,7 +2070,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ calculator, onClos
                                 <button
                                     onClick={handleRedeemInviteCode}
                                     disabled={!inviteCodeInput.trim()}
-                                    className="px-4 py-2.5 bg-gray-800 text-white rounded-xl text-sm font-bold hover:bg-gray-900 active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                                    className="w-full @[220px]:w-auto px-4 py-2.5 bg-gray-800 text-white rounded-xl text-sm font-bold hover:bg-gray-900 active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed shrink-0 whitespace-nowrap"
                                 >
                                     {t('invite_code_redeem')}
                                 </button>
@@ -2094,7 +2094,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ calculator, onClos
 
         {/* Modals - Absolute positioned within sidebar */}
         {showSettings && (
-            <div className="absolute inset-0 z-40 bg-white/95 backdrop-blur-md overflow-y-auto flex flex-col animate-in fade-in slide-in-from-bottom-4 duration-300">
+            <div className="absolute inset-0 z-40 bg-white/95 backdrop-blur-md overflow-y-auto overflow-x-hidden flex flex-col min-w-0 animate-in fade-in slide-in-from-bottom-4 duration-300">
                 {/* Sticky Header */}
                 <div className="sticky top-0 z-10 bg-white/90 backdrop-blur-md px-6 py-4 border-b border-gray-100 flex justify-between items-center">
                     <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
@@ -2105,7 +2105,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ calculator, onClos
                     </button>
                 </div>
 
-                <div className="px-5 py-5 space-y-5">
+                <div className="px-5 py-5 space-y-5 min-w-0">
                     {/* ── Language ── */}
                     <section className="space-y-2">
                         <p className="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
@@ -2244,7 +2244,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ calculator, onClos
                     <div className="border-t border-gray-100" />
 
                     {/* ── Invite Code ── */}
-                    <section className={`p-4 rounded-xl border text-sm space-y-3 ${isInviteUnlocked ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
+                    <section className={`@container p-4 rounded-xl border text-sm space-y-3 min-w-0 overflow-hidden ${isInviteUnlocked ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
                         <p className={`font-bold flex items-center gap-2 ${isInviteUnlocked ? 'text-green-700' : 'text-gray-700'}`}>
                             <ShieldCheck size={15} className={isInviteUnlocked ? 'text-green-500' : 'text-gray-400'} />
                             {t('invite_code')}
@@ -2262,15 +2262,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ calculator, onClos
                                 {inviteCodeStatus === 'success' ? (
                                     <p className="text-xs text-green-600 font-medium">{t('invite_code_success')}</p>
                                 ) : (
-                                    <div className="space-y-1.5">
-                                        <div className="flex gap-2">
+                                    <div className="space-y-1.5 min-w-0">
+                                        <div className="flex flex-col @[220px]:flex-row gap-2 w-full min-w-0">
                                             <input
                                                 type="text"
                                                 value={inviteCodeInput}
                                                 onChange={e => { setInviteCodeInput(e.target.value); setInviteCodeStatus('idle'); }}
                                                 onKeyDown={e => e.key === 'Enter' && handleRedeemInviteCode()}
                                                 placeholder={t('invite_code_placeholder')}
-                                                className={`flex-1 px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2 transition-colors bg-white ${
+                                                className={`w-full min-w-0 @[220px]:flex-1 px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2 transition-colors bg-white ${
                                                     inviteCodeStatus === 'error'
                                                     ? 'border-red-300 focus:ring-red-200'
                                                     : 'border-gray-300 focus:ring-blue-200'
@@ -2279,7 +2279,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ calculator, onClos
                                             <button
                                                 onClick={handleRedeemInviteCode}
                                                 disabled={!inviteCodeInput.trim()}
-                                                className="px-3 py-2 bg-gray-800 text-white rounded-lg text-sm font-bold hover:bg-black active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                                                className="w-full @[220px]:w-auto px-3 py-2 bg-gray-800 text-white rounded-lg text-sm font-bold hover:bg-black active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed shrink-0 whitespace-nowrap"
                                             >
                                                 {t('invite_code_redeem')}
                                             </button>

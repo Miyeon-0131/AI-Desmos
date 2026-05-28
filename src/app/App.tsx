@@ -1154,7 +1154,7 @@ function App() {
             top: false, right: false, bottom: false, left: true,
             topRight: false, bottomRight: false, bottomLeft: false, topLeft: false
           }}
-          className="border-l border-gray-200 bg-white shadow-2xl z-20 relative" // 左边框分隔线 + 深阴影
+          className="border-l border-gray-200 bg-white shadow-2xl z-20 relative min-w-0 overflow-hidden" // 左边框分隔线 + 深阴影
           handleClasses={{
             // 左边缘拖拽把手的 CSS 类：悬停时显示蓝色半透明条
             left: 'hover:bg-blue-500/20 transition-colors w-1 cursor-col-resize z-50'
