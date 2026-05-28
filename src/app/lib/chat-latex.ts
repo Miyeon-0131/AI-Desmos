@@ -6,6 +6,26 @@ export type LatexSegment =
   | { type: 'text'; data: string }
   | { type: 'math'; data: string; display: boolean };
 
+/** 修正常见 LLM LaTeX 笔误（聊天 KaTeX 渲染前） */
+export function fixChatLatexMathBody(latex: string): string {
+  let s = latex.trim();
+
+  // s_C、n_N → s_{C}、n_{N}
+  s = s.replace(/([A-Za-z])_([A-Za-z]{1,4})(?![A-Za-z{])/g, '$1_{$2}');
+
+  // \sqrt{\frac{digits}} 缺分母时，尝试拆成 \frac{前3}{后2}（如 58658 → 586/58）
+  s = s.replace(
+    /\\sqrt\s*\{\s*\\frac\s*\{(\d{4,})\}\s*\}/g,
+    (_m, digits: string) => {
+      const splitAt = digits.length - 2;
+      if (splitAt <= 0) return _m;
+      return `\\sqrt{\\frac{${digits.slice(0, splitAt)}}{${digits.slice(splitAt)}}}`;
+    },
+  );
+
+  return s;
+}
+
 /** 修正并统一 LaTeX 分隔符，确保 \[ \] 等块级公式可被识别 */
 export function normalizeChatLatexText(text: string): string {
   let s = text;
@@ -21,10 +41,16 @@ export function normalizeChatLatexText(text: string): string {
   s = s.replace(/\s+\\\]/g, '\\]');
 
   // 将 \[ ... \] 统一为 $$ ... $$（最稳妥的块级分隔）
-  s = s.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, (_m, body) => `\n$$${String(body).trim()}$$\n`);
+  s = s.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, (_m, body) =>
+    `\n$$${fixChatLatexMathBody(String(body).trim())}$$\n`);
 
   // \( ... \) → $ ... $
-  s = s.replace(/\\\(\s*([\s\S]*?)\s*\\\)/g, (_m, body) => `$${String(body).trim()}$`);
+  s = s.replace(/\\\(\s*([\s\S]*?)\s*\\\)/g, (_m, body) => `$${fixChatLatexMathBody(String(body))}$`);
+
+  // 修正 $...$ 与 $$...$$ 内的常见笔误
+  s = s.replace(/\$\$([\s\S]*?)\$\$/g, (_m, body) => `$$${fixChatLatexMathBody(String(body))}$$`);
+  s = s.replace(/(^|[^\\$])\$([^$\n]+?)\$(?!\$)/g, (_m, prefix, body) =>
+    `${prefix}$${fixChatLatexMathBody(String(body))}$`);
 
   return s;
 }

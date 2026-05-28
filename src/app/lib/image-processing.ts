@@ -1504,30 +1504,25 @@ export function getNextHandDrawStrokeIndex(calculator: any): number {
   return maxIdx + 1;
 }
 
-const throwIfAborted = (signal?: AbortSignal) => {
-  if (signal?.aborted) {
-    throw new DOMException('Drawing aborted', 'AbortError');
-  }
-};
 
 const sleep = (ms: number, signal?: AbortSignal) =>
-  new Promise<void>((resolve, reject) => {
+  new Promise<void>((resolve) => {
     if (signal?.aborted) {
-      reject(new DOMException('Drawing aborted', 'AbortError'));
+      resolve();
       return;
     }
     if (ms <= 0) {
       const timer = setTimeout(resolve, 0);
       signal?.addEventListener('abort', () => {
         clearTimeout(timer);
-        reject(new DOMException('Drawing aborted', 'AbortError'));
+        resolve();
       }, { once: true });
       return;
     }
     const timer = setTimeout(resolve, ms);
     signal?.addEventListener('abort', () => {
       clearTimeout(timer);
-      reject(new DOMException('Drawing aborted', 'AbortError'));
+      resolve();
     }, { once: true });
   });
 
@@ -1633,39 +1628,54 @@ export async function applyFourierExpressionsProgressively(
   const contourGroups = groupContourExpressions(contours);
   const totalSteps = contourGroups.length + fills.length;
   let done = 0;
+  let nextContour = 0;
+  let nextFill = 0;
 
-  try {
-    // 1) 轮廓：每组（隐藏辅助式 + 可见曲线）逐条出现
-    for (let i = 0; i < contourGroups.length; i++) {
-      throwIfAborted(signal);
-      const group = contourGroups[i];
-      pushExprBatch(calculator, group);
-      done += 1;
-      onProgress?.(done, totalSteps, 'outline');
-      if (i + 1 < contourGroups.length) {
-        await sleep(contourDelayMs, signal);
-      }
+  const flushRemaining = () => {
+    for (let i = nextContour; i < contourGroups.length; i++) {
+      pushExprBatch(calculator, contourGroups[i]);
     }
-
-    // 2) 填色：一个 polygon 一条表达式
-    for (let i = 0; i < fills.length; i++) {
-      throwIfAborted(signal);
+    for (let i = nextFill; i < fills.length; i++) {
       calculator.setExpression(prepareFourierExpression(fills[i]));
+    }
+    bringOutlinePlotsToFront(calculator, contourGroups);
+    onProgress?.(totalSteps, totalSteps, 'fill');
+  };
+
+  // 1) 轮廓：每组（隐藏辅助式 + 可见曲线）逐条出现
+  for (let i = 0; i < contourGroups.length; i++) {
+    if (signal?.aborted) break;
+    pushExprBatch(calculator, contourGroups[i]);
+    nextContour = i + 1;
+    done += 1;
+    onProgress?.(done, totalSteps, 'outline');
+    if (i + 1 < contourGroups.length) {
+      await sleep(contourDelayMs, signal);
+      if (signal?.aborted) break;
+    }
+  }
+
+  // 2) 填色：一个 polygon 一条表达式
+  if (!signal?.aborted) {
+    for (let i = 0; i < fills.length; i++) {
+      if (signal?.aborted) break;
+      calculator.setExpression(prepareFourierExpression(fills[i]));
+      nextFill = i + 1;
       done += 1;
       onProgress?.(done, totalSteps, 'fill');
       if (i + 1 < fills.length) {
         await sleep(fillDelayMs, signal);
+        if (signal?.aborted) break;
       }
     }
-
-    throwIfAborted(signal);
-    bringOutlinePlotsToFront(calculator, contourGroups);
-  } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      throw error;
-    }
-    throw error;
   }
+
+  if (signal?.aborted) {
+    flushRemaining();
+    return;
+  }
+
+  bringOutlinePlotsToFront(calculator, contourGroups);
 }
 
 /** 立即写入全部表达式（无动画） */

@@ -185,7 +185,7 @@ export const translations = {
     drawing_processing: '正在分析图片…',
     drawing_progress_outline: '正在勾勒轮廓 {current}/{total}…',
     drawing_progress_fill: '正在填色 {current}/{total}…',
-    drawing_cancelled: '绘画已终止（已保留当前进度）。',
+    drawing_cancelled: '绘画已终止。',
     task_cancel: '终止',
     task_cancelled: '任务已终止。',
     image_process_fail: '图片处理失败：可能是图片对比度不足或未找到闭合轮廓。', // 图片处理失败消息
@@ -567,7 +567,7 @@ export const translations = {
     drawing_processing: 'Analyzing image…',
     drawing_progress_outline: 'Drawing outlines {current}/{total}…',
     drawing_progress_fill: 'Filling blocks {current}/{total}…',
-    drawing_cancelled: 'Drawing stopped (current progress kept).',
+    drawing_cancelled: 'Drawing stopped.',
     task_cancel: 'Stop',
     task_cancelled: 'Task cancelled.',
     image_process_fail: 'Image processing failed: Low contrast or no closed contours found.',

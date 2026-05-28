@@ -300,12 +300,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ calculator, onClos
   };
 
   const handleCancelTask = () => {
+    const drawingActive = messages.some(m => m.drawingProgressPhase);
     taskAbortRef.current?.abort();
     taskAbortRef.current = null;
     setIsLoading(false);
-    setMessages(prev => [
-      ...prev.map(m =>
-        m.drawingProgressPhase ? {
+    if (drawingActive) {
+      setMessages(prev => prev.map(m => {
+        if (m.drawingProgressPhase !== 'processing') return m;
+        return {
           ...m,
           drawingProgressPhase: undefined,
           drawingProgressCurrent: undefined,
@@ -313,8 +315,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ calculator, onClos
           content: t('drawing_cancelled'),
           translationKey: 'drawing_cancelled',
           translationParams: undefined,
-        } : m,
-      ),
+        };
+      }));
+      return;
+    }
+    setMessages(prev => [
+      ...prev,
       {
         id: Date.now().toString(),
         role: 'system',
@@ -953,12 +959,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ calculator, onClos
 
     const result = await processEmojiToFourier(emoji, { mode });
     if (signal?.aborted) return;
-    try {
-      await revealDrawingProgress(result.expressions, aiMsgId, signal);
-    } catch (error) {
-      if (isAbortError(error)) return;
-      throw error;
-    }
+    await revealDrawingProgress(result.expressions, aiMsgId, signal);
 
     setMessages(prev => prev.map(m =>
       m.id === aiMsgId ? {
@@ -1243,20 +1244,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ calculator, onClos
         ));
 
     } catch (error) {
-        if (isAbortError(error)) {
-            setMessages(prev => prev.map(m =>
-                m.id === progressMsgId ? {
-                    ...m,
-                    content: t('drawing_cancelled'),
-                    translationKey: 'drawing_cancelled',
-                    drawingProgressPhase: undefined,
-                    drawingProgressCurrent: undefined,
-                    drawingProgressTotal: undefined,
-                } : m
-            ));
-            return;
-        }
-        setMessages(prev => [...prev, { 
+        if (isAbortError(error)) return;
+        setMessages(prev => [...prev, {
             id: Date.now().toString(), 
             role: 'system', 
             content: 'Image processing failed',
