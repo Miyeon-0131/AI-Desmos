@@ -71,7 +71,101 @@ export function normalizeDesmosFormulaLatex(formula: string): string {
   clean = clean.replace(/,\s*$/, '').trim();
 
   clean = wrapIntegralIntegrandInParens(clean);
+  clean = normalizeParametricParameterToT(clean);
   return clean;
+}
+
+const PARAM_SLIDER_BLOCKLIST = new Set(['x', 'y', 'e', 'i', 'r', 't', 'pi']);
+
+/** 解析开头的 (xExpr, yExpr) 参数方程对；极坐标 r=... 不算参数方程 */
+function splitLeadingParametricPair(formula: string): { x: string; y: string; tail: string } | null {
+  const s = formula.trim();
+  if (/^\s*r\s*=/i.test(s)) return null;
+
+  let i = 0;
+  if (s.startsWith('\\left')) {
+    const leftOpen = s.match(/^\\left\s*[\(\[]/);
+    if (!leftOpen) return null;
+    i = leftOpen[0].length;
+  }
+  if (s[i] !== '(') return null;
+
+  const openIdx = i;
+  i += 1;
+  let depth = 1;
+  let commaAt = -1;
+  for (; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '(') {
+      depth += 1;
+      continue;
+    }
+    if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) {
+        if (commaAt === -1) return null;
+        const x = s.slice(openIdx + 1, commaAt).trim();
+        const y = s.slice(commaAt + 1, i).trim();
+        const tail = s.slice(i + 1).trim();
+        return x && y ? { x, y, tail } : null;
+      }
+      continue;
+    }
+    if (ch === ',' && depth === 1 && commaAt === -1) {
+      commaAt = i;
+    }
+  }
+  return null;
+}
+
+function collectParamCandidates(parts: string[]): string[] {
+  const found = new Set<string>();
+  for (const part of parts) {
+    const fnArgs = part.matchAll(/(?:\\[a-zA-Z]+|[a-zA-Z])\((\\?theta|θ|[a-zA-Z])\)/g);
+    for (const m of fnArgs) {
+      const v = m[1] === 'θ' ? '\\theta' : m[1];
+      if (!PARAM_SLIDER_BLOCKLIST.has(v.replace(/^\\/, ''))) found.add(v);
+    }
+    if (/\b\\theta\b/.test(part) || /θ/.test(part)) found.add('\\theta');
+    for (const m of part.matchAll(/\b([a-zA-Z])\b/g)) {
+      if (!PARAM_SLIDER_BLOCKLIST.has(m[1])) found.add(m[1]);
+    }
+  }
+  return [...found];
+}
+
+function replaceParamToken(formula: string, from: string, to: string): string {
+  if (from === '\\theta' || from === 'θ') {
+    return formula
+      .replace(/\\theta(?![a-zA-Z])/g, to)
+      .replace(/θ/g, to);
+  }
+  if (from.length === 1) {
+    return formula.replace(new RegExp(`(?<![a-zA-Z\\\\])${from}(?![a-zA-Z])`, 'g'), to);
+  }
+  return formula.split(from).join(to);
+}
+
+/**
+ * Desmos 参数方程标准形式只接受 t。
+ * 将 (X(u), Y(u))、(cos(θ), sin(θ)) 等误写统一为 t；极坐标 r=f(θ) 不受影响。
+ */
+export function normalizeParametricParameterToT(formula: string): string {
+  const pair = splitLeadingParametricPair(formula);
+  if (!pair) return formula;
+
+  const candidates = collectParamCandidates([pair.x, pair.y, pair.tail]);
+  const toReplace = candidates.filter(v => v !== 't');
+  if (toReplace.length === 0) return formula;
+
+  const target = toReplace.find(v => {
+    const inX = pair.x.includes(v) || (v === '\\theta' && (/\b\\theta\b/.test(pair.x) || /θ/.test(pair.x)));
+    const inY = pair.y.includes(v) || (v === '\\theta' && (/\b\\theta\b/.test(pair.y) || /θ/.test(pair.y)));
+    return inX && inY;
+  }) ?? toReplace[0];
+
+  if (!target || target === 't') return formula;
+  return replaceParamToken(formula, target, 't');
 }
 
 const isBalancedParenExpr = (s: string): boolean => {

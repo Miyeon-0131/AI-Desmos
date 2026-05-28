@@ -180,6 +180,7 @@ export function processDesmosStreamChunk(
 
     if (/^\s*t\s*=\s*[-+]?\d/.test(cleanFormula)) continue;
     if (/^\s*\\?theta\s*=\s*[-+]?\d/i.test(cleanFormula)) continue;
+    if (/^\s*[uvs]\s*=\s*[-+]?\d/i.test(cleanFormula)) continue;
 
     if (!cleanFormula) continue;
 
@@ -212,7 +213,8 @@ export function processDesmosStreamChunk(
     if (
       !cleanFormula ||
       /^\s*t\s*=\s*[-+]?\d/.test(cleanFormula) ||
-      /^\s*\\?theta\s*=\s*[-+]?\d/i.test(cleanFormula)
+      /^\s*\\?theta\s*=\s*[-+]?\d/i.test(cleanFormula) ||
+      /^\s*[uvs]\s*=\s*[-+]?\d/i.test(cleanFormula)
     ) continue;
     try {
       if (!state.hasClearedCanvas) {

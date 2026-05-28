@@ -83,7 +83,7 @@ export const translations = {
     theory_desc: '智能绘图与图片拟合的核心，是把形状转化为 Desmos 能绘制的数学表达式。',
     theory_step1: '1. 提取形状：色块用颜色网格分区 + 洪水填充；轮廓用 Sobel 边缘检测追踪线稿。',
     theory_step2: '2. 数学拟合：对轮廓点做 DFT（离散傅里叶变换），求出各频率的系数。',
-    theory_step3: '3. 参数方程：组合成 X(t) 与 Y(t)，Desmos 用旋转向量叠加逐点绘制曲线。',
+    theory_step3: '3. 参数方程：组合成 X(t) 与 Y(t)（Desmos 参数方程只接受 t），用旋转向量叠加逐点绘制曲线。',
 
     // ── 智能绘图功能说明 ──────────────────────────────────────────────────────
     smart_draw: '自然语言绘图',
@@ -470,7 +470,7 @@ export const translations = {
     theory_desc: 'Smart drawing and image fitting convert shapes into math expressions Desmos can plot.',
     theory_step1: '1. Extract shapes: flood fill for color blocks; Sobel edge detection for line-art contours.',
     theory_step2: '2. Math fitting: DFT (Discrete Fourier Transform) computes frequency coefficients.',
-    theory_step3: '3. Parametric equations: combine into X(t) and Y(t); Desmos draws via rotating vectors.',
+    theory_step3: '3. Parametric equations: combine into X(t) and Y(t) (Desmos only accepts t as the parameter); Desmos draws via rotating vectors.',
 
     // ── 智能绘图功能说明 ──────────────────────────────────────────────────────
     smart_draw: 'Natural Language Plotting',
