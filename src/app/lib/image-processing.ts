@@ -1543,15 +1543,6 @@ const prepareFourierExpression = (expr: any): any => {
 const isFillExpression = (expr: any): boolean =>
   String(expr.id || '').startsWith('fill_poly_');
 
-const getFillRowKey = (expr: any): number => {
-  const latex = String(expr.latex || '');
-  const matches = [...latex.matchAll(/\\left\(([-\d.]+),([-\d.]+)\\right\)/g)];
-  if (matches.length === 0) return 0;
-  const ys = matches.map(m => parseFloat(m[2])).filter(Number.isFinite);
-  if (ys.length === 0) return 0;
-  return Math.round(((Math.min(...ys) + Math.max(...ys)) / 2) * 80);
-};
-
 const getContourGroupKey = (expr: any): string | null => {
   const id = String(expr.id || '');
   const dft = id.match(/^dft_(?:plot|freq|real|imag|x|y)_(\d+)$/);
@@ -1559,26 +1550,6 @@ const getContourGroupKey = (expr: any): string | null => {
   const hd = id.match(/^hd_(?:plot|freq|real|imag|x|y)_(\d+)$/);
   if (hd) return `hd_${hd[1]}`;
   return null;
-};
-
-const groupFillRows = (fills: any[]): any[][] => {
-  if (fills.length === 0) return [];
-
-  const rows: any[][] = [];
-  let currentRow = getFillRowKey(fills[0]);
-  let bucket: any[] = [];
-
-  for (const expr of fills) {
-    const rowKey = getFillRowKey(expr);
-    if (bucket.length > 0 && rowKey !== currentRow) {
-      rows.push(bucket);
-      bucket = [];
-      currentRow = rowKey;
-    }
-    bucket.push(expr);
-  }
-  if (bucket.length > 0) rows.push(bucket);
-  return rows;
 };
 
 const groupContourExpressions = (contours: any[]): any[][] => {
@@ -1615,9 +1586,10 @@ export type ProgressiveDrawPhase = 'fill' | 'outline';
 
 export type ProgressiveDrawOptions = {
   clearFirst?: boolean;
-  rowBatchDelayMs?: number;
+  /** 每条可见轮廓曲线之间的间隔（毫秒） */
   contourDelayMs?: number;
-  fillsPerTick?: number;
+  /** 每个填色 polygon 之间的间隔（毫秒） */
+  fillDelayMs?: number;
   onProgress?: (done: number, total: number, phase: ProgressiveDrawPhase) => void;
   signal?: AbortSignal;
 };
@@ -1633,26 +1605,7 @@ const pushExprBatch = (calculator: any, chunk: any[]) => {
   chunk.forEach(expr => calculator.setExpression(expr));
 };
 
-const pushExprBatches = async (
-  calculator: any,
-  exprs: any[],
-  batchSize: number,
-  delayMs: number,
-  signal?: AbortSignal,
-  onChunk?: (count: number) => void,
-) => {
-  for (let i = 0; i < exprs.length; i += batchSize) {
-    throwIfAborted(signal);
-    const chunk = exprs.slice(i, i + batchSize);
-    pushExprBatch(calculator, chunk);
-    onChunk?.(chunk.length);
-    if (delayMs > 0 && i + batchSize < exprs.length) {
-      await sleep(delayMs, signal);
-    }
-  }
-};
-
-/** 先逐条勾勒轮廓，再逐行 polygon 填色（批量写入，避免卡死） */
+/** 先逐条勾勒轮廓，再逐个 polygon 填色（逐条写入，避免 Desmos 卡死） */
 export async function applyFourierExpressionsProgressively(
   calculator: any,
   expressions: any[],
@@ -1662,7 +1615,8 @@ export async function applyFourierExpressionsProgressively(
 
   const {
     clearFirst = true,
-    contourDelayMs = 36,
+    contourDelayMs = 32,
+    fillDelayMs = 16,
     onProgress,
     signal,
   } = options;
@@ -1672,60 +1626,31 @@ export async function applyFourierExpressionsProgressively(
   const prepared = expressions.map(prepareFourierExpression);
   const fills = prepared.filter(isFillExpression);
   const contours = prepared.filter(expr => !isFillExpression(expr));
-  const fillRows = groupFillRows(fills);
   const contourGroups = groupContourExpressions(contours);
-  const totalSteps = fills.length + contourGroups.length;
+  const totalSteps = contourGroups.length + fills.length;
   let done = 0;
 
-  const hiddenContours = contours.filter(expr => expr.hidden);
-  const plotExprs = contourGroups
-    .map(group => group.find(expr => /_(plot)_/.test(String(expr.id || ''))))
-    .filter(Boolean) as any[];
-
-  const outlineWave = Math.max(3, Math.ceil(plotExprs.length / 10));
-  const turboFill = fills.length > 720;
-  const fillWaveSize = turboFill
-    ? Math.max(DESMOS_EXPR_BATCH, Math.ceil(fills.length / 8))
-    : DESMOS_EXPR_BATCH;
-
   try {
-    // 1) 隐藏辅助公式一次性批量写入（用户无感知，避免逐条卡顿）
-    await pushExprBatches(calculator, hiddenContours, DESMOS_EXPR_BATCH, 0, signal);
-
-    // 2) 可见轮廓分批出现
-    for (let i = 0; i < plotExprs.length; i += outlineWave) {
+    // 1) 轮廓：每组（隐藏辅助式 + 可见曲线）逐条出现
+    for (let i = 0; i < contourGroups.length; i++) {
       throwIfAborted(signal);
-      const chunk = plotExprs.slice(i, i + outlineWave);
-      pushExprBatch(calculator, chunk);
-      done += chunk.length;
+      const group = contourGroups[i];
+      pushExprBatch(calculator, group);
+      done += 1;
       onProgress?.(done, totalSteps, 'outline');
-      if (i + outlineWave < plotExprs.length) {
+      if (i + 1 < contourGroups.length) {
         await sleep(contourDelayMs, signal);
       }
     }
 
-    // 3) 填色：大量色块时分少数几波写入，否则按行批量写入
-    if (turboFill) {
-      await pushExprBatches(
-        calculator,
-        fills,
-        fillWaveSize,
-        20,
-        signal,
-        count => {
-          done += count;
-          onProgress?.(done, totalSteps, 'fill');
-        },
-      );
-    } else {
-      for (const row of fillRows) {
-        throwIfAborted(signal);
-        pushExprBatch(calculator, row);
-        done += row.length;
-        onProgress?.(done, totalSteps, 'fill');
-        if (fillRows.length > 1) {
-          await sleep(10, signal);
-        }
+    // 2) 填色：一个 polygon 一条表达式
+    for (let i = 0; i < fills.length; i++) {
+      throwIfAborted(signal);
+      calculator.setExpression(prepareFourierExpression(fills[i]));
+      done += 1;
+      onProgress?.(done, totalSteps, 'fill');
+      if (i + 1 < fills.length) {
+        await sleep(fillDelayMs, signal);
       }
     }
 
