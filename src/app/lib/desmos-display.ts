@@ -76,6 +76,12 @@ export function normalizeDesmosFormulaLatex(formula: string): string {
 }
 
 const PARAM_SLIDER_BLOCKLIST = new Set(['x', 'y', 'e', 'i', 'r', 't', 'pi']);
+const PARAM_FN_BLOCKLIST = new Set(['le', 'ge', 'left', 'right', 'operatorname']);
+
+/** 坐标式子是否已在用 t 作参数，如 \\cos(t)、X_{0}(t) */
+function usesTAsParameter(expr: string): boolean {
+  return /(?:\\[a-zA-Z]+|[A-Z]_{[^}]+}|\b[a-zA-Z]{2,})\(\s*t\s*\)/.test(expr);
+}
 
 /** 解析开头的 (xExpr, yExpr) 参数方程对；极坐标 r=... 不算参数方程 */
 function splitLeadingParametricPair(formula: string): { x: string; y: string; tail: string } | null {
@@ -120,17 +126,30 @@ function splitLeadingParametricPair(formula: string): { x: string; y: string; ta
 
 function collectParamCandidates(parts: string[]): string[] {
   const found = new Set<string>();
+
+  const addCandidate = (raw: string) => {
+    const v = raw === 'θ' ? '\\theta' : raw;
+    const key = v.replace(/^\\/, '');
+    if (!PARAM_SLIDER_BLOCKLIST.has(key)) found.add(v);
+  };
+
   for (const part of parts) {
-    const fnArgs = part.matchAll(/(?:\\[a-zA-Z]+|[a-zA-Z])\((\\?theta|θ|[a-zA-Z])\)/g);
-    for (const m of fnArgs) {
-      const v = m[1] === 'θ' ? '\\theta' : m[1];
-      if (!PARAM_SLIDER_BLOCKLIST.has(v.replace(/^\\/, ''))) found.add(v);
+    // LaTeX 命令：\cos(u)、\sin(\theta)
+    for (const m of part.matchAll(/\\([a-zA-Z]+)\((\\?theta|θ|[a-zA-Z])\)/g)) {
+      addCandidate(m[2]);
+    }
+    // 傅里叶辅助函数：X_{0}(u)
+    for (const m of part.matchAll(/[A-Z]_{[^}]+}\((\\?theta|θ|[a-zA-Z])\)/g)) {
+      addCandidate(m[1]);
+    }
+    // 普通函数名（至少 2 字母，避免 cos 内 s(u) 误匹配）：cos(u)、sin(u)
+    for (const m of part.matchAll(/\b([a-zA-Z]{2,})\((\\?theta|θ|[a-zA-Z])\)/g)) {
+      if (PARAM_FN_BLOCKLIST.has(m[1])) continue;
+      addCandidate(m[2]);
     }
     if (/\b\\theta\b/.test(part) || /θ/.test(part)) found.add('\\theta');
-    for (const m of part.matchAll(/\b([a-zA-Z])\b/g)) {
-      if (!PARAM_SLIDER_BLOCKLIST.has(m[1])) found.add(m[1]);
-    }
   }
+
   return [...found];
 }
 
@@ -154,6 +173,9 @@ export function normalizeParametricParameterToT(formula: string): string {
   const pair = splitLeadingParametricPair(formula);
   if (!pair) return formula;
 
+  // 已是标准 t 参数，勿再替换
+  if (usesTAsParameter(pair.x) && usesTAsParameter(pair.y)) return formula;
+
   const candidates = collectParamCandidates([pair.x, pair.y, pair.tail]);
   const toReplace = candidates.filter(v => v !== 't');
   if (toReplace.length === 0) return formula;
@@ -165,7 +187,15 @@ export function normalizeParametricParameterToT(formula: string): string {
   }) ?? toReplace[0];
 
   if (!target || target === 't') return formula;
-  return replaceParamToken(formula, target, 't');
+
+  // 函数名已是 t 时（如 t(u)）替换参数会得到 t(t)，直接跳过
+  if (/\bt\s*\(\s*[^)]+\s*\)/.test(pair.x) || /\bt\s*\(\s*[^)]+\s*\)/.test(pair.y)) {
+    return formula;
+  }
+
+  const result = replaceParamToken(formula, target, 't');
+  if (/\bt\s*\(\s*t\s*\)/.test(result)) return formula;
+  return result;
 }
 
 const isBalancedParenExpr = (s: string): boolean => {
