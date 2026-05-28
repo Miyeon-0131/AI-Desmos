@@ -1,0 +1,192 @@
+/* KEEP_IN_SYNC(fullscreen/resources/figmake/shadcn/globals.css) */
+/*
+ * ============================================================================
+ * default_theme.css — shadcn/ui 主题变量配置
+ * ============================================================================
+ *
+ * 【这个文件做什么？】
+ * 这里定义了整个应用的"设计令牌"（Design Tokens）——即颜色、圆角等基础设计值。
+ * 它们以 CSS 自定义属性（CSS Custom Properties，也叫 CSS 变量）的形式存储。
+ *
+ * 【什么是 CSS 变量？】
+ * CSS 变量以 -- 开头，如 --background、--primary。
+ * 定义后可以在任何 CSS 或 Tailwind 类中通过 var(--变量名) 引用。
+ * 改变这里的变量值，整个应用的对应颜色都会同步改变。
+ *
+ * 【颜色值格式：oklch】
+ * oklch(L C H) 是现代 CSS 颜色格式：
+ *   L = 亮度（0=纯黑, 1=纯白）
+ *   C = 饱和度（0=无色, 数值越大越鲜艳）
+ *   H = 色调（0-360 度色轮角度）
+ * 相比 hex 和 rgb，oklch 在感知上更均匀，修改更直观。
+ *
+ * 【两套主题：:root（亮色）和 .dark（暗色）】
+ * :root 定义所有元素的默认颜色（亮色主题）。
+ * .dark 覆盖 :root 中的变量值（暗色主题）。
+ * 在 html 元素上添加 class="dark" 即可切换到暗色模式。
+ *
+ * 注意：本应用目前只使用亮色主题（不会切换到 .dark）
+ */
+
+/* ── 亮色主题（默认）──────────────────────────────────────────────────────── */
+:root {
+  --font-size: 16px;                        /* 基础字号（1rem = 16px） */
+
+  /* ── 背景与前景色 ──────────────────────────────────────────────────────── */
+  --background: #ffffff;                     /* 页面背景：纯白 */
+  --foreground: oklch(0.145 0 0);            /* 主文字颜色：近黑色 */
+
+  /* ── 卡片颜色（弹出面板、卡片组件） ──────────────────────────────────── */
+  --card: #ffffff;                           /* 卡片背景：纯白 */
+  --card-foreground: oklch(0.145 0 0);       /* 卡片文字：近黑色 */
+
+  /* ── 弹出层（Popover、下拉菜单） ────────────────────────────────────── */
+  --popover: oklch(1 0 0);                   /* 弹出层背景：纯白 */
+  --popover-foreground: oklch(0.145 0 0);    /* 弹出层文字：近黑色 */
+
+  /* ── 主色调（Primary）— 用于主要按钮、高亮元素 ─────────────────────── */
+  --primary: #030213;                        /* 主色：深黑（接近黑色的深蓝黑） */
+  --primary-foreground: oklch(1 0 0);        /* 主色上的文字：纯白 */
+
+  /* ── 次色调（Secondary）— 用于次要按钮、标签等 ─────────────────────── */
+  --secondary: oklch(0.95 0.0058 264.53);    /* 次色：极浅蓝灰色 */
+  --secondary-foreground: #030213;           /* 次色上的文字：深黑 */
+
+  /* ── 静音色（Muted）— 用于背景色、禁用状态 ─────────────────────────── */
+  --muted: #ececf0;                          /* 静音背景：浅灰蓝 */
+  --muted-foreground: #717182;               /* 静音文字：中灰 */
+
+  /* ── 强调色（Accent）— 用于悬停高亮、选中状态 ──────────────────────── */
+  --accent: #e9ebef;                         /* 强调背景：浅灰 */
+  --accent-foreground: #030213;              /* 强调文字：深黑 */
+
+  /* ── 破坏性操作色（Destructive）— 用于删除、警告按钮 ───────────────── */
+  --destructive: #d4183d;                    /* 破坏色：红色 */
+  --destructive-foreground: #ffffff;         /* 破坏色上的文字：纯白 */
+
+  /* ── 边框、输入框 ─────────────────────────────────────────────────────── */
+  --border: rgba(0, 0, 0, 0.1);             /* 边框颜色：10% 不透明黑色（浅灰） */
+  --input: transparent;                      /* 输入框边框：透明（使用 input-background） */
+  --input-background: #f3f3f5;               /* 输入框背景：浅灰白 */
+  --switch-background: #cbced4;              /* 开关组件背景：中灰 */
+
+  /* ── 字重变量 ─────────────────────────────────────────────────────────── */
+  --font-weight-medium: 500;                 /* 中等字重 */
+  --font-weight-normal: 400;                 /* 普通字重 */
+
+  /* ── 焦点环（Focus Ring）— 键盘导航时的焦点指示器 ──────────────────── */
+  --ring: oklch(0.708 0 0);                  /* 焦点环颜色：中灰 */
+
+  /* ── 图表颜色（用于 chart.tsx 图表组件） ───────────────────────────── */
+  --chart-1: oklch(0.646 0.222 41.116);      /* 图表颜色 1：橙色 */
+  --chart-2: oklch(0.6 0.118 184.704);       /* 图表颜色 2：青绿色 */
+  --chart-3: oklch(0.398 0.07 227.392);      /* 图表颜色 3：深蓝色 */
+  --chart-4: oklch(0.828 0.189 84.429);      /* 图表颜色 4：黄绿色 */
+  --chart-5: oklch(0.769 0.188 70.08);       /* 图表颜色 5：黄色 */
+
+  /* ── 圆角（Radius）─────────────────────────────────────────────────────
+     --radius 是基础圆角值（0.625rem ≈ 10px）
+     其他组件基于此变量计算自己的圆角，形成统一的圆角体系 */
+  --radius: 0.625rem;                        /* 基础圆角：10px */
+
+  /* ── 侧边栏专用颜色 ───────────────────────────────────────────────────── */
+  --sidebar: oklch(0.985 0 0);                    /* 侧边栏背景：近白色 */
+  --sidebar-foreground: oklch(0.145 0 0);          /* 侧边栏文字：近黑色 */
+  --sidebar-primary: #030213;                      /* 侧边栏主色：深黑 */
+  --sidebar-primary-foreground: oklch(0.985 0 0);  /* 侧边栏主色文字：白色 */
+  --sidebar-accent: oklch(0.97 0 0);               /* 侧边栏强调：极浅灰 */
+  --sidebar-accent-foreground: oklch(0.205 0 0);   /* 侧边栏强调文字：深灰 */
+  --sidebar-border: oklch(0.922 0 0);              /* 侧边栏边框：浅灰 */
+  --sidebar-ring: oklch(0.708 0 0);                /* 侧边栏焦点环：中灰 */
+}
+
+/* ── 暗色主题（当 html 有 class="dark" 时生效）─────────────────────────── */
+.dark {
+  /* 暗色模式下，亮色和暗色互换：
+     背景变成深黑，文字变成浅白，颜色饱和度调低 */
+  --background: oklch(0.145 0 0);            /* 背景：深黑 */
+  --foreground: oklch(0.985 0 0);            /* 文字：近白 */
+  --card: oklch(0.145 0 0);                  /* 卡片背景：深黑 */
+  --card-foreground: oklch(0.985 0 0);       /* 卡片文字：近白 */
+  --popover: oklch(0.145 0 0);               /* 弹出层背景：深黑 */
+  --popover-foreground: oklch(0.985 0 0);    /* 弹出层文字：近白 */
+  --primary: oklch(0.985 0 0);               /* 主色：近白（暗色模式下主色变浅） */
+  --primary-foreground: oklch(0.205 0 0);    /* 主色文字：深灰 */
+  --secondary: oklch(0.269 0 0);             /* 次色：深灰 */
+  --secondary-foreground: oklch(0.985 0 0);  /* 次色文字：近白 */
+  --muted: oklch(0.269 0 0);                 /* 静音背景：深灰 */
+  --muted-foreground: oklch(0.708 0 0);      /* 静音文字：中灰 */
+  --accent: oklch(0.269 0 0);                /* 强调背景：深灰 */
+  --accent-foreground: oklch(0.985 0 0);     /* 强调文字：近白 */
+  --destructive: oklch(0.396 0.141 25.723);  /* 破坏色：暗红色 */
+  --destructive-foreground: oklch(0.637 0.237 25.331); /* 破坏色文字：亮红 */
+  --border: oklch(0.269 0 0);                /* 边框：深灰 */
+  --input: oklch(0.269 0 0);                 /* 输入框边框：深灰 */
+  --ring: oklch(0.439 0 0);                  /* 焦点环：中深灰 */
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --chart-1: oklch(0.488 0.243 264.376);     /* 图表颜色 1：蓝色（暗色模式更亮） */
+  --chart-2: oklch(0.696 0.17 162.48);       /* 图表颜色 2：绿色 */
+  --chart-3: oklch(0.769 0.188 70.08);       /* 图表颜色 3：黄色 */
+  --chart-4: oklch(0.627 0.265 303.9);       /* 图表颜色 4：紫色 */
+  --chart-5: oklch(0.645 0.246 16.439);      /* 图表颜色 5：红色 */
+  --sidebar: oklch(0.205 0 0);               /* 侧边栏背景：深灰黑 */
+  --sidebar-foreground: oklch(0.985 0 0);    /* 侧边栏文字：近白 */
+  --sidebar-primary: oklch(0.488 0.243 264.376); /* 侧边栏主色：蓝色 */
+  --sidebar-primary-foreground: oklch(0.985 0 0); /* 侧边栏主色文字：白 */
+  --sidebar-accent: oklch(0.269 0 0);        /* 侧边栏强调：深灰 */
+  --sidebar-accent-foreground: oklch(0.985 0 0); /* 侧边栏强调文字：白 */
+  --sidebar-border: oklch(0.269 0 0);        /* 侧边栏边框：深灰 */
+  --sidebar-ring: oklch(0.439 0 0);          /* 侧边栏焦点环：中深灰 */
+}
+
+/* ── @theme inline — 把 CSS 变量绑定到 Tailwind 颜色系统 ─────────────────
+   这是 Tailwind CSS v4 的特性：通过 @theme inline 告诉 Tailwind
+   某些颜色类名（如 bg-background、text-foreground）
+   应该使用我们定义的 CSS 变量，而不是 Tailwind 的默认颜色。
+   这样，上面定义的 --background 就能通过 bg-background 类名使用。 */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-input-background: var(--input-background);
+  --color-switch-background: var(--switch-background);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  /* ── 圆角别名 ───────────────────────────────────────────────────────────
+     基于 --radius 派生出四种圆角尺寸，供 Tailwind 的 rounded-* 类使用 */
+  --radius-sm: calc(var(--radius) - 4px);   /* 小圆角（约 6px） */
+  --radius-md: calc(var(--radius) - 2px);   /* 中等圆角（约 8px） */
+  --radius-lg: var(--radius);               /* 标准圆角（10px） */
+  --radius-xl: calc(var(--radius) + 4px);   /* 大圆角（约 14px） */
+
+  /* 侧边栏颜色绑定到 Tailwind */
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}

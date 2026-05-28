@@ -1,0 +1,41 @@
+/**
+ * ============================================================================
+ * styles/index.css — CSS 样式入口文件
+ * ============================================================================
+ *
+ * 【这个文件的作用】
+ * 这是整个应用的 CSS 入口文件，由 src/main.tsx 导入：
+ *   import "./styles/index.css";
+ *
+ * 它通过 @import 把所有样式文件"串联"起来，浏览器只需加载这一个文件，
+ * 就能获取所有样式。
+ *
+ * 【Tailwind CSS 的 @import 机制】
+ * @import 'tailwindcss' source(none) — 引入 Tailwind v4 核心，
+ * 但不自动扫描文件（source(none) 表示不自动检测使用了哪些类名）
+ *
+ * @source '../../**\/*.{js,ts,jsx,tsx}' — 手动指定扫描范围：
+ * 扫描项目中所有 .js/.ts/.jsx/.tsx 文件里用到的 Tailwind 类名。
+ * Tailwind 只会把实际用到的类名打包进最终 CSS，节省体积。
+ */
+
+/* Tailwind CSS v4 核心引入
+   source(none) 禁用自动文件扫描，改为下面手动指定 */
+@import 'tailwindcss' source(none);
+
+/* 手动指定 Tailwind 扫描范围：项目中所有 JS/TS/JSX/TSX 文件
+   Tailwind 会分析这些文件里出现的类名，只打包实际用到的 CSS */
+@source '../../**/*.{js,ts,jsx,tsx}';
+
+/* tw-animate-css：Tailwind 的动画扩展库
+   提供 animate-in、fade-in、slide-in-from-* 等进场动画类名
+   这些动画在 App.tsx 和各组件的 JSX 中广泛使用 */
+@import 'tw-animate-css';
+
+/* 主题变量和基础设置（来自 Figma Make 的 shadcn/ui 主题）
+   定义 --background、--foreground、--primary 等 CSS 变量，
+   控制整个应用的颜色系统 */
+@import './default_theme.css';
+
+/* 全局样式：重置 html/body 的边距，设置 #root 高度等 */
+@import './globals.css';

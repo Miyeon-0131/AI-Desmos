@@ -1,0 +1,2107 @@
+/**
+ * ============================================================================
+ * lib/image-processing.ts — 图像处理与傅里叶级数可视化
+ * ============================================================================
+ *
+ * 【这个文件做什么？】
+ * 把图片或 Emoji 转化为 Desmos 能绘制的参数方程（曲线）。
+ *
+ * 听起来很神奇，其实背后的数学原理是：
+ *   📐 任何封闭的曲线都可以用"旋转向量叠加"来近似
+ *   🎵 就像音乐是多个正弦波叠加的——图形也可以！
+ *
+ * 【完整处理流程】
+ *   图片/Emoji
+ *     → Canvas 绘制（把图片渲染到内存画布）
+ *     → 灰度化（彩色 → 黑白）
+ *     → 盒式模糊（去噪点）
+ *     → Sobel 梯度（检测边缘）
+ *     → 自适应阈值 + 轮廓追踪（找出所有边缘线条）
+ *     → 噪声过滤（强度/长度/几何形状过滤）
+ *     → 降采样（减少点数，提高 DFT 效率）
+ *     → DFT 计算（离散傅里叶变换，求各频率的振幅/相位）
+ *     → 生成 Desmos 参数方程（X(t) 和 Y(t) 函数）
+ *     → 注入 Desmos 画板显示
+ *
+ * 【什么是 DFT？】
+ * DFT = Discrete Fourier Transform（离散傅里叶变换）
+ * 把一组点（轮廓坐标）分解成若干个"旋转圆"的叠加。
+ * 每个旋转圆有自己的：频率（转多快）、振幅（半径多大）、相位（初始角度）。
+ * 把所有圆的轨迹叠加，就能近似重现原始轮廓。
+ *
+ * 【导出函数】
+ * - processImageToFourier(file) — 图片文件 → Desmos 表达式数组
+ * - processEmojiToFourier(emoji) — Emoji 字符 → Desmos 表达式数组
+ * - processImageToPoints — processImageToFourier 的别名（兼容旧代码）
+ */
+
+// ─── 类型定义 ────────────────────────────────────────────────────────────────
+
+/**
+ * Point — 二维坐标点
+ * x: 横坐标（向右为正）
+ * y: 纵坐标（向下为正，Canvas 坐标系）
+ */
+interface Point {
+  x: number;
+  y: number;
+}
+
+/**
+ * Complex — 复数（复平面上的点）
+ * DFT 的结果是复数，包含振幅和相位信息
+ * re: 实部（Real part）
+ * im: 虚部（Imaginary part）
+ */
+interface Complex {
+  re: number;
+  im: number;
+}
+
+/**
+ * ContourMeta — 轮廓的统计元数据
+ * 用于过滤噪声（太短、太圆、太小的轮廓）
+ */
+interface ContourMeta {
+  index: number;        // 在 rawContours 数组中的原始索引
+  cx: number;           // 轮廓中心的 x 坐标（包围盒中心）
+  cy: number;           // 轮廓中心的 y 坐标（包围盒中心）
+  minX: number;         // 轮廓最左侧 x
+  maxX: number;         // 轮廓最右侧 x
+  minY: number;         // 轮廓最上侧 y
+  maxY: number;         // 轮廓最下侧 y
+  w: number;            // 包围盒宽度（maxX - minX）
+  h: number;            // 包围盒高度（maxY - minY）
+  boundsArea: number;   // 包围盒面积（w × h）
+  pathLength: number;   // 轮廓的折线总长度（像素）
+  points: Point[];      // 轮廓上的点序列
+  averageStrength: number; // 平均梯度强度（越高说明边缘越明显）
+  isClosed: boolean;    // 是否为闭合轮廓（首尾接近）
+  radiusCV: number;     // 半径变异系数（暂未使用）
+  fillRatio: number;    // 填充率 = 形状面积 / 包围盒面积（点→接近1，线→接近0）
+  circularity: number;  // 圆形度 = 4π×面积 / 周长²（完美圆=1，直线≈0）
+  aspectRatio: number;  // 宽高比（w / h）
+}
+
+// ─── 工具函数 ────────────────────────────────────────────────────────────────
+
+/**
+ * boxBlur — 盒式模糊（均值滤波）
+ *
+ * 【作用】对灰度图进行平滑处理，去掉孤立的噪点。
+ * 原理：把每个像素替换为它 3×3 邻域内所有像素的平均值。
+ * 就像用橡皮在图上轻轻抹了一遍——细节被模糊，轮廓保留。
+ *
+ * @param input - 输入灰度数组（每个值 0-255，0=黑，255=白）
+ * @param w     - 图像宽度（像素）
+ * @param h     - 图像高度（像素）
+ * @returns 模糊后的灰度数组
+ */
+const boxBlur = (input: Uint8Array, w: number, h: number) => {
+  // 创建同等大小的输出数组
+  const output = new Uint8Array(w * h);
+
+  // 遍历每个像素（跳过边缘1像素，避免越界）
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const idx = y * w + x; // 当前像素在一维数组中的索引（二维→一维）
+      let sum = 0;
+
+      // 遍历 3×3 邻域（ky 和 kx 各为 -1, 0, 1）
+      for (let ky = -1; ky <= 1; ky++) {
+        for (let kx = -1; kx <= 1; kx++) {
+          sum += input[(y + ky) * w + (x + kx)]; // 累加邻域像素值
+        }
+      }
+      output[idx] = sum / 9; // 9 个像素取平均（3×3 = 9）
+    }
+  }
+  return output;
+};
+
+/**
+ * smoothPoints — 高斯平滑（轮廓平滑）
+ *
+ * 【作用】消除轮廓追踪产生的锯齿状抖动。
+ * 原理：用加权平均平滑每个点（前一个点25%权重 + 当前50% + 后一个25%）。
+ * 这是一个简化的"高斯核"（权重分布类似正态分布的形状）。
+ *
+ * @param points - 原始轮廓点序列
+ * @returns 平滑后的轮廓点序列（首尾两点保持不变）
+ */
+const smoothPoints = (points: Point[]): Point[] => {
+  if (points.length < 3) return points; // 少于 3 个点，无法平滑
+
+  const smoothed: Point[] = [];
+  smoothed.push(points[0]); // 第一个点直接保留
+
+  // 对中间的每个点，用前后邻居做加权平均
+  for (let i = 1; i < points.length - 1; i++) {
+    smoothed.push({
+      // 0.25 × 前一点 + 0.5 × 当前点 + 0.25 × 后一点
+      x: 0.25 * points[i - 1].x + 0.5 * points[i].x + 0.25 * points[i + 1].x,
+      y: 0.25 * points[i - 1].y + 0.5 * points[i].y + 0.25 * points[i + 1].y
+    });
+  }
+
+  smoothed.push(points[points.length - 1]); // 最后一个点直接保留
+  return smoothed;
+};
+
+/**
+ * calculatePathLength — 计算折线总长度
+ *
+ * 把相邻两点的距离加起来，得到轮廓的"总路程"。
+ * 用勾股定理计算两点间距离：d = √(Δx² + Δy²)
+ *
+ * @param points - 轮廓点序列
+ * @returns 总路径长度（像素单位）
+ */
+const calculatePathLength = (points: Point[]): number => {
+  let len = 0;
+  for (let i = 0; i < points.length - 1; i++) {
+    const dx = points[i + 1].x - points[i].x; // x 方向的差
+    const dy = points[i + 1].y - points[i].y; // y 方向的差
+    len += Math.sqrt(dx * dx + dy * dy);       // 勾股定理求距离
+  }
+  return len;
+};
+
+/**
+ * calculatePolygonArea — 计算多边形面积（Shoelace 公式）
+ *
+ * 鞋带公式（Shoelace Formula）：
+ *   A = |Σ(x_i × y_{i+1} - x_{i+1} × y_i)| / 2
+ * 适用于任意多边形，不需要是凸多边形。
+ * 结果是绝对值（不管顶点是顺时针还是逆时针排列）。
+ *
+ * @param points - 多边形顶点序列
+ * @returns 多边形面积（像素²）
+ */
+const calculatePolygonArea = (points: Point[]): number => {
+  let area = 0;
+  for (let i = 0; i < points.length; i++) {
+    const j = (i + 1) % points.length; // 下一个点的索引（最后一个点连接到第一个点）
+    area += points[i].x * points[j].y; // 叉乘的 x 部分
+    area -= points[j].x * points[i].y; // 叉乘的 y 部分
+  }
+  return Math.abs(area) / 2; // 除以 2 得到面积，取绝对值去掉符号
+};
+
+const DESMOS_FALLBACK_COLORS = [
+  '#c74440', '#2d70b3', '#388c46', '#fa7e19', '#6042a6', '#000000',
+  '#6fa8dc', '#e06666', '#93c47d', '#f1c232', '#8e7cc3', '#cc0000',
+];
+
+const rgbToHex = (r: number, g: number, b: number): string =>
+  `#${[r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')}`;
+
+const isCanvasBackground = (r: number, g: number, b: number): boolean => {
+  const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+  const spread = Math.max(r, g, b) - Math.min(r, g, b);
+  // 仅用于识别画布留白；图内的白/浅灰服装、头发等不应被当作背景
+  return lum > 248 && spread < 18;
+};
+
+/** 仅用于区域连通分割，比显示色更粗一档即可 */
+const quantizeColorKey = (r: number, g: number, b: number): number =>
+  ((r >> 2) << 12) | ((g >> 2) << 6) | (b >> 2);
+
+const colorDistance = (
+  a: { r: number; g: number; b: number },
+  b: { r: number; g: number; b: number },
+): number => Math.abs(a.r - b.r) + Math.abs(a.g - b.g) + Math.abs(a.b - b.b);
+
+/** 允许抗锯齿边缘连通；略收紧以减少跨色块合并 */
+const FILL_COLOR_TOLERANCE = 42;
+
+const colorsSimilarForFill = (
+  a: { r: number; g: number; b: number },
+  b: { r: number; g: number; b: number },
+): boolean =>
+  quantizeColorKey(a.r, a.g, a.b) === quantizeColorKey(b.r, b.g, b.b)
+  || colorDistance(a, b) <= FILL_COLOR_TOLERANCE;
+
+/** 从图片四边 flood fill，只标记与边框连通的留白区域 */
+const buildBorderBackgroundMask = (
+  keys: Uint32Array,
+  gw: number,
+  gh: number,
+  rgbAt: (gx: number, gy: number) => { r: number; g: number; b: number },
+  bgKey: number,
+): Uint8Array => {
+  const isBg = new Uint8Array(gw * gh);
+  const stack: number[] = [];
+
+  const seed = (gx: number, gy: number) => {
+    const idx = gy * gw + gx;
+    if (isBg[idx]) return;
+    const { r, g, b } = rgbAt(gx, gy);
+    if (keys[idx] !== bgKey && !isCanvasBackground(r, g, b)) return;
+    isBg[idx] = 1;
+    stack.push(idx);
+  };
+
+  for (let gx = 0; gx < gw; gx++) {
+    seed(gx, 0);
+    seed(gx, gh - 1);
+  }
+  for (let gy = 1; gy < gh - 1; gy++) {
+    seed(0, gy);
+    seed(gw - 1, gy);
+  }
+
+  while (stack.length) {
+    const cur = stack.pop()!;
+    const cx = cur % gw;
+    const cy = Math.floor(cur / gw);
+    const curKey = keys[cur];
+
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = cx + dx;
+      const ny = cy + dy;
+      if (nx < 0 || nx >= gw || ny < 0 || ny >= gh) continue;
+      const ni = ny * gw + nx;
+      if (isBg[ni]) continue;
+      const nb = rgbAt(nx, ny);
+      if (keys[ni] !== curKey && !isCanvasBackground(nb.r, nb.g, nb.b)) continue;
+      isBg[ni] = 1;
+      stack.push(ni);
+    }
+  }
+
+  return isBg;
+};
+
+const sampleContourColor = (
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  points: Point[],
+): string => {
+  const { data } = ctx.getImageData(0, 0, width, height);
+  const samples: { r: number; g: number; b: number }[] = [];
+  const step = Math.max(1, Math.floor(points.length / 36));
+
+  for (let i = 0; i < points.length; i += step) {
+    for (const [ox, oy] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [2, 0], [0, 2]]) {
+      const x = Math.round(points[i].x + ox);
+      const y = Math.round(points[i].y + oy);
+      if (x < 0 || x >= width || y < 0 || y >= height) continue;
+
+      const idx = (y * width + x) * 4;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      if (!isCanvasBackground(r, g, b)) samples.push({ r, g, b });
+    }
+  }
+
+  if (samples.length === 0) return DESMOS_FALLBACK_COLORS[0];
+
+  const median = (values: number[]) => {
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  };
+
+  return rgbToHex(
+    median(samples.map(s => s.r)),
+    median(samples.map(s => s.g)),
+    median(samples.map(s => s.b)),
+  );
+};
+
+// ─── 轮廓提取 ────────────────────────────────────────────────────────────────
+
+/**
+ * extractContours — 从 Canvas 图像数据中提取边缘轮廓
+ *
+ * 这是整个管线中最复杂的函数，包含以下步骤：
+ *   1. 灰度化：RGBA → 单通道灰度值
+ *   2. 盒式模糊：去噪
+ *   3. Sobel 梯度：计算每个像素的边缘强度
+ *   4. 自适应阈值：根据图像整体强度动态调整"什么算边缘"
+ *   5. 轮廓追踪：从高强度点出发，沿边缘方向走，收集路径
+ *   6. 平滑处理：消除锯齿
+ *
+ * @param ctx    - Canvas 2D 绘图上下文（可以读取像素数据）
+ * @param width  - 图像宽度
+ * @param height - 图像高度
+ * @returns 轮廓点序列数组 + 每条轮廓的平均强度
+ */
+const extractContours = (
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number
+): { contours: Point[][], strengths: number[] } => {
+
+  // 读取 canvas 上所有像素的 RGBA 数据
+  // imageData.data 是一个平坦数组：[R0, G0, B0, A0, R1, G1, B1, A1, ...]
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const data = imageData.data;
+
+  // visited 数组：记录每个像素是否已被追踪（防止重复），0=未访问，1=已访问
+  const visited = new Uint8Array(width * height);
+
+  // 结果数组
+  const contours: Point[][] = [];  // 所有找到的轮廓
+  const strengths: number[] = []; // 每条轮廓的平均边缘强度
+
+  // 图像中心坐标（用于"晕影保护"：中心区域允许更低阈值）
+  const cx = width / 2;
+  const cy = height / 2;
+
+  // ── 步骤 1：灰度化 ──────────────────────────────────────────────────────
+  // 把 RGBA 图像转成单通道灰度图（每像素1个值，而不是4个）
+  const gray = new Uint8Array(width * height);
+  for (let i = 0; i < width * height; i++) {
+    const offset = i * 4; // 每个像素在 data 数组中的起始位置
+    // 感知亮度公式（比简单平均更准确，符合人眼感知）：
+    // Y = 0.299×R + 0.587×G + 0.114×B
+    gray[i] = 0.299 * data[offset] + 0.587 * data[offset + 1] + 0.114 * data[offset + 2];
+  }
+
+  // ── 步骤 2：盒式模糊（去噪）─────────────────────────────────────────────
+  let blurred = boxBlur(gray, width, height);
+
+  // ── 步骤 3：计算梯度图（Sobel 边缘检测简化版）────────────────────────────
+  // 梯度 = 像素亮度变化的速率
+  // 边缘处亮度变化剧烈 → 梯度大 → 边缘
+  // 平坦区域亮度变化平缓 → 梯度小 → 非边缘
+  const gradientMap = new Uint8Array(width * height);
+  let totalGrad = 0;     // 所有有效梯度值的总和（用于计算平均值）
+  let nonZeroCount = 0;  // 有效梯度点的数量
+
+  const IGNORE_MARGIN = 16; // 忽略图像边缘 16 像素（边缘区域常有噪声）
+
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const idx = y * width + x; // 当前像素索引
+
+      // 忽略图像边缘区域
+      if (x < IGNORE_MARGIN || x > width - IGNORE_MARGIN ||
+          y < IGNORE_MARGIN || y > height - IGNORE_MARGIN) {
+        gradientMap[idx] = 0;
+        continue;
+      }
+
+      // 简化的 Sobel 梯度计算：
+      // gx = 右侧像素 - 左侧像素（水平方向的亮度差）
+      // gy = 下方像素 - 上方像素（垂直方向的亮度差）
+      const gx = (blurred[idx + 1] - blurred[idx - 1]);
+      const gy = (blurred[idx + width] - blurred[idx - width]);
+
+      // 梯度大小 = 两个方向梯度的向量长度（勾股定理）
+      const mag = Math.sqrt(gx * gx + gy * gy);
+
+      gradientMap[idx] = Math.min(255, mag); // 限制在 0-255 范围内
+
+      // 统计强边缘像素（梯度 > 10 才算有效）
+      if (mag > 10) {
+        totalGrad += mag;
+        nonZeroCount++;
+      }
+    }
+  }
+
+  // ── 步骤 4：计算自适应阈值 ─────────────────────────────────────────────
+  // 全局平均梯度强度（边缘的"平均水平"）
+  const globalAvgStrength = nonZeroCount > 0 ? (totalGrad / nonZeroCount) : 10;
+
+  /**
+   * getThresholdAt — 根据位置动态计算启动阈值
+   *
+   * 设计思路：中心区域的细节更重要，允许较低阈值（0.6×平均）
+   *           边缘区域噪声多，需要较高阈值（1.4×平均）
+   * 这模拟了"晕影效应"：中心清晰，边缘稍模糊
+   */
+  const getThresholdAt = (x: number, y: number) => {
+    const dx = x - cx;
+    const dy = y - cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);            // 到中心的距离
+    const maxDist = Math.sqrt(cx * cx + cy * cy);         // 最大可能距离（角点）
+    const factor = 0.6 + (dist / maxDist) * 0.8;          // 0.6（中心）到 1.4（角点）
+    return globalAvgStrength * factor;
+  };
+
+  // ── 步骤 5：轮廓追踪 ──────────────────────────────────────────────────────
+  /**
+   * traceContour — 从起点沿边缘追踪一条完整轮廓
+   *
+   * 策略：
+   * 1. 从高梯度点出发（已通过阈值检测）
+   * 2. 在 8 个方向的邻居中，选择梯度最强且未访问的点
+   * 3. 继续追踪，直到没有符合条件的邻居（死路）或达到最大点数
+   *
+   * 动态阈值（Hysteresis，迟滞）：
+   * 开始追踪需要高阈值（确保从真实边缘出发）
+   * 追踪过程中接受较低阈值（追踪已有线条时可以接受稍弱的边缘）
+   */
+  const traceContour = (startX: number, startY: number): { points: Point[], avgStrength: number } => {
+    const points: Point[] = [];    // 收集轮廓上的点
+    let currentX = startX;
+    let currentY = startY;
+    let totalStrength = 0;         // 累计路径强度（用于计算平均值）
+
+    points.push({ x: currentX, y: currentY }); // 把起点加入轮廓
+    visited[currentY * width + currentX] = 1;   // 标记起点为已访问
+
+    // 8 方向偏移量（上、右上、右、右下、下、左下、左、左上）
+    const dx = [0, 1, 1, 1, 0, -1, -1, -1];
+    const dy = [-1, -1, 0, 1, 1, 1, 0, -1];
+
+    let steps = 0;
+    const maxPoints = 5000; // 每条轮廓最多 5000 个点（防止无限循环）
+
+    while (steps < maxPoints) {
+      let bestNextX = -1, bestNextY = -1, bestNextVal = -1;
+
+      // 追踪过程中的动态阈值（比启动阈值低，允许追踪稍弱的边缘）
+      const localThresh = getThresholdAt(currentX, currentY) * 0.4;
+
+      // 检查 8 个方向的邻居，选择最强的有效邻居
+      for (let i = 0; i < 8; i++) {
+        const nx = currentX + dx[i]; // 邻居的 x 坐标
+        const ny = currentY + dy[i]; // 邻居的 y 坐标
+
+        // 检查是否在图像范围内
+        if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+          const idx = ny * width + nx;
+
+          if (visited[idx] === 0) { // 只考虑未访问的点
+            const val = gradientMap[idx];
+
+            // 梯度超过阈值，且比当前找到的最强邻居还强
+            if (val > localThresh && val > bestNextVal) {
+              bestNextVal = val;
+              bestNextX = nx;
+              bestNextY = ny;
+            }
+          }
+        }
+      }
+
+      if (bestNextX !== -1) {
+        // 找到了下一个点，继续追踪
+        currentX = bestNextX;
+        currentY = bestNextY;
+        points.push({ x: currentX, y: currentY });
+        visited[currentY * width + currentX] = 1; // 标记为已访问
+        totalStrength += bestNextVal;
+      } else {
+        // 四面都没有合适的邻居（死路），停止追踪
+        break;
+      }
+      steps++;
+    }
+
+    return {
+      points,
+      avgStrength: totalStrength / (points.length || 1) // 平均强度（避免除以0）
+    };
+  };
+
+  // ── 步骤 6：扫描所有像素，从高梯度点启动轮廓追踪 ─────────────────────────
+  const SCAN_STEP = 2; // 扫描步长（每隔 2 像素检查一次，平衡细节与速度）
+
+  for (let y = IGNORE_MARGIN; y < height - IGNORE_MARGIN; y += SCAN_STEP) {
+    for (let x = IGNORE_MARGIN; x < width - IGNORE_MARGIN; x += SCAN_STEP) {
+      const idx = y * width + x;
+
+      if (visited[idx]) continue; // 已经被追踪过的点，跳过
+
+      // 高启动阈值：只从确定是边缘的强点出发
+      const startThresh = getThresholdAt(x, y);
+      if (gradientMap[idx] > startThresh) {
+        const result = traceContour(x, y);
+
+        // 只保留足够长的轮廓（太短的是噪声）
+        if (result.points.length > 15) {
+          contours.push(smoothPoints(result.points)); // 平滑后加入结果
+          strengths.push(result.avgStrength);         // 记录强度
+        }
+      }
+    }
+  }
+
+  return { contours, strengths };
+};
+
+// ─── DFT（离散傅里叶变换）────────────────────────────────────────────────────
+
+/**
+ * computeDFT — 计算点序列的离散傅里叶变换
+ *
+ * 【DFT 的原理（通俗版）】
+ * 把轮廓上的点想象成一首"歌曲"：
+ * - 每个点是某个时刻的"音符"（x, y 坐标）
+ * - DFT 把这首歌分解成若干个"纯音"（单一频率的正弦波）
+ * - 每个"纯音"有自己的频率（转多快）和振幅（多响）
+ * - 把所有"纯音"叠加，就能还原原始轮廓
+ *
+ * 用于图形绘制时：
+ * - 每个频率对应一个旋转的圆（本轮/epicycle）
+ * - 圆的半径 = 该频率的振幅
+ * - 所有圆的端点叠加，描出原始轮廓
+ *
+ * 【数学公式】
+ * X[k] = (1/N) × Σ(n=0 to N-1) (x[n]×cos(2πkn/N) + y[n]×sin(2πkn/N))
+ * Y[k] = (1/N) × Σ(n=0 to N-1) (y[n]×cos(2πkn/N) - x[n]×sin(2πkn/N))
+ *
+ * @param points    - 轮廓点序列（已居中、缩放）
+ * @param numCoeffs - 保留的频率个数（越多细节越丰富，越少越平滑）
+ * @returns 傅里叶系数数组（每个包含频率 freq、实部 re、虚部 im）
+ */
+const computeDFT = (points: Point[], numCoeffs: number) => {
+  const N = points.length; // 点的总数
+
+  // 频率上限 = N/2（奈奎斯特采样定理：最高频率不超过采样率的一半）
+  const maxK = Math.floor((N - 1) / 2);
+  const actualCoeffs = Math.min(numCoeffs, maxK); // 不超过理论上限
+
+  // 计算所有 N 个频率的 DFT 系数（X[k] 是频率 k 的复数系数）
+  const X: Complex[] = [];
+  for (let k = 0; k < N; k++) {
+    let sumRe = 0; // 实部累加
+    let sumIm = 0; // 虚部累加
+
+    for (let n = 0; n < N; n++) {
+      // φ = 2πkn/N 是当前点对频率 k 的贡献角度
+      const phi = (2 * Math.PI * k * n) / N;
+      const cos = Math.cos(phi); // 余弦值（实部基函数）
+      const sin = Math.sin(phi); // 正弦值（虚部基函数）
+
+      // 把 (x, y) 点编码为复数 z = x + iy，并与基函数相乘
+      sumRe += points[n].x * cos + points[n].y * sin;
+      sumIm += points[n].y * cos - points[n].x * sin;
+    }
+
+    // 除以 N 进行归一化（使结果不随点数变化而缩放）
+    X.push({ re: sumRe / N, im: sumIm / N });
+  }
+
+  // 组合结果：选取最有用的频率
+  const coeffs = [];
+  coeffs.push({ freq: 0, ...X[0] }); // 频率 0 = DC 分量（轮廓的平均位置/中心）
+
+  // 选取频率 1, -1, 2, -2, ..., K, -K（正负频率对称配对）
+  for (let i = 1; i <= actualCoeffs; i++) {
+    coeffs.push({ freq: i, ...X[i] });         // 正频率 i
+    coeffs.push({ freq: -i, ...X[N - i] });    // 负频率 -i（X[N-i] 对应负频率）
+  }
+
+  return coeffs;
+};
+
+// ─── 颜色填充区域（Smart Drawing — Desmos polygon 多块填色）──────────────────
+
+/** Smart Drawing 轮廓线统一使用标准黑色 */
+export const SMART_DRAW_OUTLINE_COLOR = '#000000';
+
+type FillPolygon = {
+  color: string;
+  /** Desmos 坐标系下的顶点（每个点仅 x,y 两维） */
+  points: Point[];
+  area: number;
+};
+
+const fmtDesmosNum = (n: number): string => {
+  if (!Number.isFinite(n)) return '0';
+  const rounded = Math.round(n * 10000) / 10000;
+  return Object.is(rounded, -0) ? '0' : String(rounded);
+};
+
+const fmtDesmosPoint = (x: number, y: number): string =>
+  `\\left(${fmtDesmosNum(x)},${fmtDesmosNum(y)}\\right)`;
+
+/**
+ * Desmos polygon 语法：每个顶点必须是 (x,y) 二元坐标，至少 3 个顶点。
+ * 例：\operatorname{polygon}\left(\left(-1,1\right),\left(1,1\right),\left(0,-1\right)\right)
+ */
+const buildPolygonLatex = (points: Point[]): string => {
+  const valid = points.filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+  if (valid.length < 3) return '';
+  const pts = valid.map(p => fmtDesmosPoint(p.x, p.y)).join(',');
+  return `\\operatorname{polygon}\\left(${pts}\\right)`;
+};
+
+const canvasRectToDesmos = (
+  left: number,
+  right: number,
+  top: number,
+  bottom: number,
+  offsetX: number,
+  offsetY: number,
+  desmosScale: number,
+): { xMin: number; xMax: number; yMin: number; yMax: number } => {
+  const xMin = (left - offsetX) * desmosScale;
+  const xMax = (right - offsetX) * desmosScale;
+  const yTop = -(top - offsetY) * desmosScale;
+  const yBottom = -(bottom - offsetY) * desmosScale;
+  return {
+    xMin: Math.min(xMin, xMax),
+    xMax: Math.max(xMin, xMax),
+    yMin: Math.min(yTop, yBottom),
+    yMax: Math.max(yTop, yBottom),
+  };
+};
+
+const rectBoundsToPolygonPoints = (
+  bounds: { xMin: number; xMax: number; yMin: number; yMax: number },
+): Point[] => {
+  const { xMin, xMax, yMin, yMax } = bounds;
+  if (xMin >= xMax || yMin >= yMax) return [];
+  return [
+    { x: xMin, y: yMin },
+    { x: xMax, y: yMin },
+    { x: xMax, y: yMax },
+    { x: xMin, y: yMax },
+  ];
+};
+
+/** 合并矩形 + 行内扫描 → 完整覆盖且 polygon 数量可控 */
+type FillRect = {
+  xMin: number;
+  xMax: number;
+  yMin: number;
+  yMax: number;
+  area: number;
+  sampleLeft: number;
+  sampleTop: number;
+  sampleRight: number;
+  sampleBottom: number;
+};
+
+/** 从原图像素区域取平均 RGB（用于 1:1 填色） */
+const sampleAreaRgb = (
+  src: Uint8ClampedArray,
+  imgWidth: number,
+  imgHeight: number,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+): { r: number; g: number; b: number } => {
+  const x0 = Math.max(0, Math.floor(left));
+  const x1 = Math.min(imgWidth, Math.ceil(right));
+  const y0 = Math.max(0, Math.floor(top));
+  const y1 = Math.min(imgHeight, Math.ceil(bottom));
+  if (x1 <= x0 || y1 <= y0) return { r: 0, g: 0, b: 0 };
+
+  let rs = 0;
+  let gs = 0;
+  let bs = 0;
+  const count = (x1 - x0) * (y1 - y0);
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * imgWidth + x) * 4;
+      rs += src[i];
+      gs += src[i + 1];
+      bs += src[i + 2];
+    }
+  }
+  return { r: rs / count, g: gs / count, b: bs / count };
+};
+
+const sampleRectColorFromSource = (
+  src: Uint8ClampedArray,
+  imgWidth: number,
+  imgHeight: number,
+  rect: FillRect,
+): string => {
+  const { r, g, b } = sampleAreaRgb(
+    src, imgWidth, imgHeight, rect.sampleLeft, rect.sampleTop, rect.sampleRight, rect.sampleBottom,
+  );
+  return rgbToHex(r, g, b);
+};
+
+const mergeVerticalRects = (rects: FillRect[]): FillRect[] => {
+  if (rects.length <= 1) return rects;
+
+  const sorted = [...rects].sort((a, b) =>
+    a.sampleLeft - b.sampleLeft
+    || a.sampleTop - b.sampleTop
+    || a.sampleRight - b.sampleRight,
+  );
+
+  const merged: FillRect[] = [];
+  for (const rect of sorted) {
+    const prev = merged[merged.length - 1];
+    const sameColumn =
+      prev
+      && Math.abs(prev.sampleLeft - rect.sampleLeft) < 0.5
+      && Math.abs(prev.sampleRight - rect.sampleRight) < 0.5
+      && Math.abs(prev.sampleBottom - rect.sampleTop) < 0.5
+      && Math.abs(prev.yMax - rect.yMin) < 1e-6;
+
+    if (sameColumn) {
+      prev.yMax = rect.yMax;
+      prev.sampleBottom = rect.sampleBottom;
+      prev.area += rect.area;
+    } else {
+      merged.push({ ...rect });
+    }
+  }
+  return merged;
+};
+
+type FillDetailMode = 'row' | 'merged' | 'cell';
+
+const labelToRowRects = (
+  label: number,
+  labels: Int32Array,
+  gw: number,
+  gh: number,
+  width: number,
+  height: number,
+  offsetX: number,
+  offsetY: number,
+  desmosScale: number,
+): FillRect[] => {
+  const rects: FillRect[] = [];
+
+  for (let gy = 0; gy < gh; gy++) {
+    let gx = 0;
+    while (gx < gw) {
+      while (gx < gw && labels[gy * gw + gx] !== label) gx++;
+      if (gx >= gw) break;
+      const startGx = gx;
+      while (gx < gw && labels[gy * gw + gx] === label) gx++;
+
+      const left = (startGx * width) / gw;
+      const right = (gx * width) / gw;
+      const top = (gy * height) / gh;
+      const bottom = ((gy + 1) * height) / gh;
+      const bounds = canvasRectToDesmos(left, right, top, bottom, offsetX, offsetY, desmosScale);
+
+      rects.push({
+        ...bounds,
+        sampleLeft: left,
+        sampleTop: top,
+        sampleRight: right,
+        sampleBottom: bottom,
+        area: (gx - startGx) * height / gh * width / gw,
+      });
+    }
+  }
+
+  return rects;
+};
+
+const rectsToFillPolygons = (
+  src: Uint8ClampedArray,
+  imgWidth: number,
+  imgHeight: number,
+  rects: FillRect[],
+): FillPolygon[] =>
+  rects.flatMap(rect => {
+    const points = rectBoundsToPolygonPoints(rect);
+    if (points.length < 3) return [];
+    const color = sampleRectColorFromSource(src, imgWidth, imgHeight, rect);
+    return [{ color, points, area: rect.area }];
+  });
+
+const labelToCellRects = (
+  label: number,
+  labels: Int32Array,
+  gw: number,
+  gh: number,
+  width: number,
+  height: number,
+  offsetX: number,
+  offsetY: number,
+  desmosScale: number,
+): FillRect[] => {
+  const rects: FillRect[] = [];
+  const cellW = width / gw;
+  const cellH = height / gh;
+
+  for (let gy = 0; gy < gh; gy++) {
+    for (let gx = 0; gx < gw; gx++) {
+      if (labels[gy * gw + gx] !== label) continue;
+
+      const left = gx * cellW;
+      const right = (gx + 1) * cellW;
+      const top = gy * cellH;
+      const bottom = (gy + 1) * cellH;
+      const bounds = canvasRectToDesmos(left, right, top, bottom, offsetX, offsetY, desmosScale);
+
+      rects.push({
+        ...bounds,
+        sampleLeft: left,
+        sampleTop: top,
+        sampleRight: right,
+        sampleBottom: bottom,
+        area: cellW * cellH,
+      });
+    }
+  }
+
+  return rects;
+};
+
+const buildRegionFillPolygons = (
+  raw: { label: number },
+  labels: Int32Array,
+  gw: number,
+  gh: number,
+  width: number,
+  height: number,
+  offsetX: number,
+  offsetY: number,
+  desmosScale: number,
+  mode: FillDetailMode,
+  src: Uint8ClampedArray,
+): FillPolygon[] => {
+  const common = [raw.label, labels, gw, gh, width, height, offsetX, offsetY, desmosScale] as const;
+  if (mode === 'cell') {
+    return rectsToFillPolygons(src, width, height, labelToCellRects(...common));
+  }
+  const rowRects = labelToRowRects(...common);
+  if (mode === 'row') {
+    return rectsToFillPolygons(src, width, height, rowRects);
+  }
+  return rectsToFillPolygons(src, width, height, mergeVerticalRects(rowRects));
+};
+
+const detectBorderBackgroundKey = (
+  keys: Uint32Array,
+  gw: number,
+  gh: number,
+): number => {
+  const counts = new Map<number, number>();
+  const border: number[] = [];
+  for (let x = 0; x < gw; x++) {
+    border.push(keys[x], keys[(gh - 1) * gw + x]);
+  }
+  for (let y = 1; y < gh - 1; y++) {
+    border.push(keys[y * gw], keys[y * gw + gw - 1]);
+  }
+  for (const k of border) counts.set(k, (counts.get(k) || 0) + 1);
+  let bestKey = keys[0];
+  let bestCount = 0;
+  counts.forEach((c, k) => { if (c > bestCount) { bestCount = c; bestKey = k; } });
+  return bestKey;
+};
+
+/**
+ * 提取填色 polygon：在性能上限内自动选最细网格与拆分方式
+ */
+const MAX_FILL_POLYGONS = 1200;
+
+const FILL_DETAIL_CONFIGS: { grid: number; mode: FillDetailMode }[] = [
+  { grid: 320, mode: 'cell' },
+  { grid: 300, mode: 'cell' },
+  { grid: 280, mode: 'cell' },
+  { grid: 320, mode: 'row' },
+  { grid: 300, mode: 'row' },
+  { grid: 280, mode: 'row' },
+  { grid: 260, mode: 'cell' },
+  { grid: 260, mode: 'row' },
+  { grid: 240, mode: 'cell' },
+  { grid: 240, mode: 'row' },
+  { grid: 220, mode: 'cell' },
+  { grid: 200, mode: 'cell' },
+  { grid: 220, mode: 'row' },
+  { grid: 200, mode: 'row' },
+  { grid: 180, mode: 'cell' },
+  { grid: 180, mode: 'row' },
+  { grid: 160, mode: 'row' },
+  { grid: 200, mode: 'merged' },
+  { grid: 140, mode: 'row' },
+  { grid: 160, mode: 'merged' },
+  { grid: 120, mode: 'row' },
+  { grid: 128, mode: 'merged' },
+  { grid: 96, mode: 'row' },
+  { grid: 96, mode: 'merged' },
+];
+
+type ColorSegmentation = {
+  gw: number;
+  gh: number;
+  width: number;
+  height: number;
+  src: Uint8ClampedArray;
+  labels: Int32Array;
+  borderBg: Uint8Array;
+  rawRegions: { label: number; size: number }[];
+  rgbAt: (gx: number, gy: number) => { r: number; g: number; b: number };
+};
+
+/** 与填色相同：按颜色网格分割图像 */
+const buildColorSegmentation = (
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  gridMax: number,
+): ColorSegmentation => {
+  const scale = Math.min(1, gridMax / Math.max(width, height));
+  const gw = Math.max(1, Math.round(width * scale));
+  const gh = Math.max(1, Math.round(height * scale));
+
+  const src = ctx.getImageData(0, 0, width, height).data;
+  const keys = new Uint32Array(gw * gh);
+  const rgbAt = (gx: number, gy: number) => {
+    const left = (gx * width) / gw;
+    const right = ((gx + 1) * width) / gw;
+    const top = (gy * height) / gh;
+    const bottom = ((gy + 1) * height) / gh;
+    return sampleAreaRgb(src, width, height, left, top, right, bottom);
+  };
+
+  for (let gy = 0; gy < gh; gy++) {
+    for (let gx = 0; gx < gw; gx++) {
+      const { r, g, b } = rgbAt(gx, gy);
+      keys[gy * gw + gx] = quantizeColorKey(r, g, b);
+    }
+  }
+
+  const bgKey = detectBorderBackgroundKey(keys, gw, gh);
+  const borderBg = buildBorderBackgroundMask(keys, gw, gh, rgbAt, bgKey);
+  const visited = new Uint8Array(gw * gh);
+  const labels = new Int32Array(gw * gh);
+  let nextLabel = 1;
+  const rawRegions: { label: number; size: number }[] = [];
+
+  for (let gy = 0; gy < gh; gy++) {
+    for (let gx = 0; gx < gw; gx++) {
+      const idx = gy * gw + gx;
+      if (visited[idx] || borderBg[idx]) {
+        visited[idx] = 1;
+        continue;
+      }
+      const key = keys[idx];
+      const seedColor = rgbAt(gx, gy);
+      const label = nextLabel++;
+      const stack = [idx];
+      visited[idx] = 1;
+      labels[idx] = label;
+      let size = 0;
+
+      while (stack.length) {
+        const cur = stack.pop()!;
+        size++;
+        const cx = cur % gw;
+        const cy = Math.floor(cur / gw);
+        const curColor = rgbAt(cx, cy);
+
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = cx + dx;
+          const ny = cy + dy;
+          if (nx < 0 || nx >= gw || ny < 0 || ny >= gh) continue;
+          const ni = ny * gw + nx;
+          if (visited[ni] || borderBg[ni]) continue;
+          const nb = rgbAt(nx, ny);
+          if (keys[ni] !== key && !colorsSimilarForFill(seedColor, nb) && !colorsSimilarForFill(curColor, nb)) {
+            continue;
+          }
+          visited[ni] = 1;
+          labels[ni] = label;
+          stack.push(ni);
+        }
+      }
+
+      rawRegions.push({ label, size });
+    }
+  }
+
+  return { gw, gh, width, height, src, labels, borderBg, rawRegions, rgbAt };
+};
+
+const ptKey = (x: number, y: number) =>
+  `${Math.round(x * 64)}:${Math.round(y * 64)}`;
+
+/** 从颜色分区边界追踪闭合轮廓（与填色同一套识别） */
+const traceSegmentationBoundaryLoops = (seg: ColorSegmentation): { contours: Point[][]; strengths: number[] } => {
+  const { gw, gh, width, height, labels, borderBg } = seg;
+
+  const labelAt = (gx: number, gy: number) => {
+    if (gx < 0 || gy < 0 || gx >= gw || gy >= gh) return 0;
+    if (borderBg[gy * gw + gx]) return 0;
+    return labels[gy * gw + gx];
+  };
+
+  type Edge = { a: Point; b: Point };
+  const edges: Edge[] = [];
+
+  for (let gy = 0; gy < gh; gy++) {
+    for (let gx = 0; gx <= gw; gx++) {
+      const left = labelAt(gx - 1, gy);
+      const right = labelAt(gx, gy);
+      if (left !== right && (left > 0 || right > 0)) {
+        const x = (gx * width) / gw;
+        edges.push({
+          a: { x, y: (gy * height) / gh },
+          b: { x, y: ((gy + 1) * height) / gh },
+        });
+      }
+    }
+  }
+
+  for (let gy = 0; gy <= gh; gy++) {
+    for (let gx = 0; gx < gw; gx++) {
+      const top = labelAt(gx, gy - 1);
+      const bottom = labelAt(gx, gy);
+      if (top !== bottom && (top > 0 || bottom > 0)) {
+        const y = (gy * height) / gh;
+        edges.push({
+          a: { x: (gx * width) / gw, y },
+          b: { x: ((gx + 1) * width) / gw, y },
+        });
+      }
+    }
+  }
+
+  type AdjEntry = { to: Point; edgeId: number };
+  const adj = new Map<string, AdjEntry[]>();
+  const addAdj = (from: Point, to: Point, edgeId: number) => {
+    const key = ptKey(from.x, from.y);
+    if (!adj.has(key)) adj.set(key, []);
+    adj.get(key)!.push({ to, edgeId });
+  };
+
+  edges.forEach((edge, edgeId) => {
+    addAdj(edge.a, edge.b, edgeId);
+    addAdj(edge.b, edge.a, edgeId);
+  });
+
+  const used = new Set<number>();
+  const contours: Point[][] = [];
+  const strengths: number[] = [];
+
+  for (let startId = 0; startId < edges.length; startId++) {
+    if (used.has(startId)) continue;
+
+    const startEdge = edges[startId];
+    const startKey = ptKey(startEdge.a.x, startEdge.a.y);
+    const loop: Point[] = [{ ...startEdge.a }];
+    used.add(startId);
+    let cur = { ...startEdge.b };
+
+    for (let guard = 0; guard <= edges.length; guard++) {
+      loop.push({ ...cur });
+      const options = (adj.get(ptKey(cur.x, cur.y)) || []).filter(entry => !used.has(entry.edgeId));
+      if (options.length === 0) break;
+
+      const close = options.find(entry => ptKey(entry.to.x, entry.to.y) === startKey);
+      const next = close ?? options[0];
+      used.add(next.edgeId);
+      cur = { ...next.to };
+
+      if (close && loop.length >= 4) break;
+    }
+
+    if (loop.length < 4) continue;
+
+    const last = loop[loop.length - 1];
+    if (ptKey(last.x, last.y) === startKey) loop.pop();
+
+    const smoothed = smoothPoints(loop);
+    if (calculatePathLength(smoothed) < 24) continue;
+
+    contours.push(smoothed);
+    strengths.push(Math.min(255, calculatePathLength(smoothed) / 4));
+  }
+
+  return { contours, strengths };
+};
+
+const extractSegmentationContours = (
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  gridMax = 280,
+): { contours: Point[][]; strengths: number[] } => {
+  const seg = buildColorSegmentation(ctx, width, height, gridMax);
+  return traceSegmentationBoundaryLoops(seg);
+};
+
+const extractColorFillPolygons = (
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  offsetX: number,
+  offsetY: number,
+  desmosScale: number,
+): FillPolygon[] => {
+  let best: FillPolygon[] = [];
+
+  for (const { grid, mode } of FILL_DETAIL_CONFIGS) {
+    const polys = extractColorFillPolygonsAtGrid(
+      ctx, width, height, offsetX, offsetY, desmosScale, grid, mode,
+    );
+    if (polys.length === 0) continue;
+    if (polys.length <= MAX_FILL_POLYGONS && polys.length >= best.length) {
+      best = polys;
+    }
+  }
+
+  if (best.length > 0) return best;
+
+  return extractColorFillPolygonsAtGrid(
+    ctx, width, height, offsetX, offsetY, desmosScale, 96, 'merged',
+  );
+};
+
+const extractColorFillPolygonsAtGrid = (
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  offsetX: number,
+  offsetY: number,
+  desmosScale: number,
+  gridMax: number,
+  mode: FillDetailMode = 'row',
+): FillPolygon[] => {
+  const { gw, gh, src, labels, rawRegions } = buildColorSegmentation(ctx, width, height, gridMax);
+
+  const minSize = 1;
+  rawRegions.sort((a, b) => b.size - a.size);
+
+  const polys: FillPolygon[] = [];
+  for (const raw of rawRegions) {
+    if (raw.size < minSize) continue;
+    polys.push(...buildRegionFillPolygons(
+      raw, labels, gw, gh, width, height, offsetX, offsetY, desmosScale, mode, src,
+    ));
+  }
+
+  return polys;
+};
+
+const buildFillPolygonExpressions = (polys: FillPolygon[]): any[] => {
+  const expressions: any[] = [];
+  polys.forEach((poly, i) => {
+    const latex = buildPolygonLatex(poly.points);
+    if (!latex) return;
+    expressions.push({
+      id: `fill_poly_${i}`,
+      latex,
+      color: poly.color,
+      fill: true,
+      fillOpacity: 1,
+      lineOpacity: 0,
+      hidden: false,
+    });
+  });
+  return expressions;
+};
+
+// ─── 生成 Desmos 表达式 ───────────────────────────────────────────────────────
+
+export type SmartDrawMode = 'outline' | 'fill' | 'both';
+
+export type ImageFourierOptions = {
+  /** 智能绘图模式：仅轮廓 / 仅涂色 / 轮廓+涂色，默认 both */
+  mode?: SmartDrawMode;
+};
+
+/**
+ * generateFourierExpressions — 核心：从 Canvas 生成 Desmos 傅里叶表达式
+ *
+ * 这是主处理函数，被 processImageToFourier 和 processEmojiToFourier 都调用。
+ *
+ * 【输出的 Desmos 表达式结构（每条轮廓 6 个表达式）】
+ *   F_{idx} = [k0, k1, k2, ...]  → 频率列表（隐藏）
+ *   R_{idx} = [r0, r1, r2, ...]  → 傅里叶系数实部列表（隐藏）
+ *   I_{idx} = [i0, i1, i2, ...]  → 傅里叶系数虚部列表（隐藏）
+ *   X_{idx}(t) = total(R cos(Ft) - I sin(Ft))  → X 坐标函数（隐藏）
+ *   Y_{idx}(t) = total(R sin(Ft) + I cos(Ft))  → Y 坐标函数（隐藏）
+ *   (X_{idx}(t), Y_{idx}(t))                   → 参数曲线（可见）
+ *
+ * @param ctx    - Canvas 绘图上下文
+ * @param width  - 图像宽度
+ * @param height - 图像高度
+ * @returns Desmos 表达式数组 + 说明文字
+ */
+const generateFourierExpressions = (
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  options: ImageFourierOptions = {},
+): { expressions: any[], explanation: string } => {
+  const mode: SmartDrawMode = options.mode ?? 'both';
+  const includeOutline = mode !== 'fill';
+  const includeFill = mode !== 'outline';
+  const desmosScale = 20 / Math.max(width, height);
+  const offsetX = width / 2;
+  const offsetY = height / 2;
+
+  let fillPolys: FillPolygon[] = [];
+  let fillExpressions: any[] = [];
+
+  if (includeFill) {
+    fillPolys = extractColorFillPolygons(ctx, width, height, offsetX, offsetY, desmosScale);
+    fillPolys.sort((a, b) => {
+      const avgY = (poly: FillPolygon) =>
+        poly.points.reduce((sum, p) => sum + p.y, 0) / poly.points.length;
+      return avgY(b) - avgY(a);
+    });
+    fillExpressions = buildFillPolygonExpressions(fillPolys);
+  }
+
+  if (!includeOutline) {
+    return {
+      expressions: fillExpressions,
+      explanation: fillPolys.length > 0
+        ? `绘画已完成（${fillPolys.length} 个色块，仅涂色）。`
+        : '绘画已完成。',
+    };
+  }
+
+  // 第一步：Sobel 边缘检测提取线稿轮廓
+  const { contours: rawContours, strengths } = extractContours(ctx, width, height);
+  const W = width;
+  const H = height;
+
+  // ── 元数据分析 ─────────────────────────────────────────────────────────────
+  // 为每条轮廓计算各种统计指标，用于后续过滤噪声
+  const meta: ContourMeta[] = rawContours.map((pts, i) => {
+    // 计算轮廓的包围盒（最小外接矩形）
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of pts) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+
+    const w = maxX - minX;          // 包围盒宽
+    const h = maxY - minY;          // 包围盒高
+    const cx = (minX + maxX) / 2;   // 包围盒中心 x
+    const cy = (minY + maxY) / 2;   // 包围盒中心 y
+
+    const pathLength = calculatePathLength(pts); // 轮廓总长度
+
+    // 检测轮廓是否闭合：首点和尾点的距离是否足够近
+    const start = pts[0];
+    const end = pts[pts.length - 1];
+    const gap = Math.sqrt((start.x - end.x) ** 2 + (start.y - end.y) ** 2);
+    // 闭合条件：绝对距离 < 8 像素，或者相对距离 < 路径长度的 3%
+    const isClosed = gap < 8 || gap < pathLength * 0.03;
+
+    const area = calculatePolygonArea(pts); // 多边形面积
+    const boundsArea = w * h;               // 包围盒面积
+
+    // 圆形度：完美圆形 = 1.0，线条 ≈ 0
+    // 公式：C = 4π×A / P²（A=面积，P=周长）
+    const circularity = (pathLength > 0) ? (4 * Math.PI * area) / (pathLength * pathLength) : 0;
+
+    // 填充率：形状面积 / 包围盒面积
+    // 实心圆 → 0.7-1.0；线条、字母 → 0.1-0.3
+    const fillRatio = boundsArea > 0 ? area / boundsArea : 0;
+
+    return {
+      index: i, cx, cy, minX, maxX, minY, maxY,
+      w, h, boundsArea, pathLength,
+      points: pts,
+      averageStrength: strengths[i], // 该轮廓的平均边缘强度
+      isClosed,
+      radiusCV: 0, // 暂未使用
+      fillRatio,
+      circularity,
+      area,
+      aspectRatio: h > 0 ? w / h : 1 // 宽高比
+    };
+  });
+
+  // ── 噪声过滤 ──────────────────────────────────────────────────────────────
+  // activeSet 记录"幸存"的轮廓索引（初始包含所有轮廓）
+  // Set 是 JavaScript 中的集合，查找和删除都是 O(1) 复杂度
+  const activeSet = new Set(meta.map(m => m.index));
+
+  // ── 过滤 A：强度过滤 ──────────────────────────────────────────────────────
+  // 以最强轮廓为基准，过滤掉强度不足 28% 的弱轮廓
+  const sortedStrength = [...meta].map(m => m.averageStrength).sort((a, b) => b - a);
+  const topStrength = sortedStrength.length > 0 ? sortedStrength[0] : 10;
+  const strengthThreshold = Math.max(12, topStrength * 0.28); // 至少 12，最多 topStrength × 28%
+
+  meta.forEach(m => {
+    if (m.averageStrength < strengthThreshold) {
+      activeSet.delete(m.index); // 从幸存集合中移除
+    }
+  });
+
+  // ── 过滤 B：几何过滤（消除各种噪声类型）─────────────────────────────────
+  meta.forEach(m => {
+    if (!activeSet.has(m.index)) return; // 已被过滤掉的，跳过
+
+    // B1：长度过滤：非闭合轮廓必须足够长（≥60px），闭合轮廓宽松一点（≥30px）
+    if (m.pathLength < 60 && !m.isClosed) {
+      activeSet.delete(m.index);
+      return;
+    }
+    if (m.pathLength < 30) { // 绝对最小长度（连闭合轮廓也要满足）
+      activeSet.delete(m.index);
+      return;
+    }
+
+    // B2：斑点过滤：非常小的实心圆点（如灰尘、噪点）
+    // 包围盒小于 20×20 且填充率 > 40%（接近实心）→ 是噪点，删除
+    if (m.w < 20 && m.h < 20 && m.fillRatio > 0.4) {
+      activeSet.delete(m.index);
+      return;
+    }
+
+    // B3：光环/气泡过滤：小面积但高圆形度的噪声环（如相机传感器噪声）
+    // 圆形度 > 0.75（接近圆形）且包围盒面积 < 3000 → 是噪声圆，删除
+    if (m.circularity > 0.75 && m.boundsArea < 3000) {
+      activeSet.delete(m.index);
+      return;
+    }
+
+    // B4：边框过滤：覆盖几乎整张图的轮廓是 canvas 边框，删除
+    if (m.w > W * 0.95 || m.h > H * 0.95) {
+      activeSet.delete(m.index);
+      return;
+    }
+  });
+
+  // 从原始轮廓中筛选出幸存的轮廓
+  let finalContours = rawContours.filter((_, i) => activeSet.has(i));
+
+  // ── 按优先级排序（路径长度 × 强度的乘积越大越重要）─────────────────────
+  finalContours.sort((a, b) => {
+    const mA = meta[rawContours.indexOf(a)];
+    const mB = meta[rawContours.indexOf(b)];
+    return (mB.pathLength * mB.averageStrength) - (mA.pathLength * mA.averageStrength);
+  });
+
+  // 最多保留 50 条轮廓（平衡细节与性能）
+  finalContours = finalContours.slice(0, 50);
+
+  // ── 色块 + 轮廓：动画先勾线再填色；表达式列表中轮廓在前（最终层级仍保持线条置顶）──
+  const contourExpressions: any[] = [];
+
+  // ── 生成 Desmos 轮廓表达式 ────────────────────────────────────────────────
+
+  finalContours.forEach((rawPoints, idx) => {
+    const m = meta[rawContours.indexOf(rawPoints)];
+    let processedPoints = [...rawPoints]; // 复制一份（不修改原始数据）
+
+    // ── 开放轮廓处理：防止"回程线"─────────────────────────────────────────
+    // 开放轮廓（首尾不接）的参数方程结束时会画一条直线回起点，很难看。
+    // 解决方案：让轮廓走到终点后，原路返回，形成"去而复返"的完整路径。
+    // 这样 DFT 不会看到突变，也就不会产生难看的"Gibbs 过冲"（高频振铃）。
+    if (!m.isClosed) {
+      // 把轮廓反转（从终点走回起点），去掉首尾避免重复
+      const reversed = [...processedPoints].reverse().slice(1, -1);
+
+      // 在转折点添加"暂停"点（重复3次）：让 DFT 平滑处理转折
+      const tip = processedPoints[processedPoints.length - 1]; // 终点
+      const root = processedPoints[0];                          // 起点
+      const pauseTip  = [tip, tip, tip];   // 终点暂停
+      const pauseRoot = [root, root, root]; // 起点暂停
+
+      // 最终路径：起点→终点→暂停→原路返回→暂停→(回到起点，首尾相连)
+      processedPoints = [...processedPoints, ...pauseTip, ...reversed, ...pauseRoot];
+    }
+
+    // ── 降采样：减少点数（提高 DFT 效率）───────────────────────────────────
+    // 目标：约 400 个点（太多 DFT 很慢，太少细节丢失）
+    const targetCount = 400;
+    const step = Math.max(1, Math.floor(processedPoints.length / targetCount));
+    // 每隔 step 个点取一个（i % step === 0 时保留）
+    const points = processedPoints.filter((_, i) => i % step === 0);
+
+    // ── 坐标系转换 ────────────────────────────────────────────────────────
+    const centeredPoints = points.map(p => ({
+      x: (p.x - offsetX) * desmosScale,  // 中心化 + 缩放
+      y: -(p.y - offsetY) * desmosScale   // 中心化 + 缩放 + 翻转 Y 轴（Canvas Y 向下，Desmos Y 向上）
+    }));
+
+    // ── DFT 参数选择 ──────────────────────────────────────────────────────
+    // K = 保留的频率个数（越大细节越多，但计算量越大）
+    // 最多 100 个频率（经验值：足够细节但不过拟合噪声）
+    // 不超过点数的一半（奈奎斯特限制）
+    let K = Math.min(100, Math.floor((points.length - 1) / 2));
+    if (K < 5) K = 5; // 至少 5 个频率（否则图形太粗糙）
+
+    // ── 计算 DFT ──────────────────────────────────────────────────────────
+    const coeffs = computeDFT(centeredPoints, K);
+
+    // 提取各频率的参数
+    const L_freq = coeffs.map(c => c.freq);            // 频率列表：[0, 1, -1, 2, -2, ...]
+    const L_real = coeffs.map(c => c.re.toFixed(5));   // 实部（保留5位小数，平衡精度和体积）
+    const L_imag = coeffs.map(c => c.im.toFixed(5));   // 虚部
+
+    // 为每条轮廓生成唯一的 Desmos 变量名（使用下标索引）
+    const index    = idx;             // 轮廓序号
+    const id_freq  = `F_{${index}}`; // 频率列表变量名（如 F_{0}）
+    const id_re    = `R_{${index}}`; // 实部列表变量名（如 R_{0}）
+    const id_im    = `I_{${index}}`; // 虚部列表变量名（如 I_{0}）
+    const func_X   = `X_{${index}}`; // X 坐标函数名（如 X_{0}）
+    const func_Y   = `Y_{${index}}`; // Y 坐标函数名（如 Y_{0}）
+
+    const plotColor = SMART_DRAW_OUTLINE_COLOR;
+
+    // ── 推入 Desmos 表达式 ─────────────────────────────────────────────────
+    contourExpressions.push(
+      // 频率列表（隐藏，用户看不到）
+      { id: `dft_freq_${index}`, latex: `${id_freq} = [${L_freq.join(',')}]`, hidden: true },
+
+      // 傅里叶系数实部列表（隐藏）
+      { id: `dft_real_${index}`, latex: `${id_re} = [${L_real.join(',')}]`, hidden: true },
+
+      // 傅里叶系数虚部列表（隐藏）
+      { id: `dft_imag_${index}`, latex: `${id_im} = [${L_imag.join(',')}]`, hidden: true },
+
+      // X(t) 函数：X 坐标 = 所有旋转圆的 x 分量之和
+      // total() 是 Desmos 的求和函数（对列表所有元素求和）
+      // 公式：X(t) = Σ(R[k]×cos(F[k]×t) - I[k]×sin(F[k]×t))
+      {
+        id: `dft_x_${index}`,
+        latex: `${func_X}(t) = \\operatorname{total}(${id_re}\\cos(${id_freq}t) - ${id_im}\\sin(${id_freq}t))`,
+        hidden: true
+      },
+
+      // Y(t) 函数：Y 坐标 = 所有旋转圆的 y 分量之和
+      // 公式：Y(t) = Σ(R[k]×sin(F[k]×t) + I[k]×cos(F[k]×t))
+      {
+        id: `dft_y_${index}`,
+        latex: `${func_Y}(t) = \\operatorname{total}(${id_re}\\sin(${id_freq}t) + ${id_im}\\cos(${id_freq}t))`,
+        hidden: true
+      },
+
+      // 参数曲线（可见！这就是用户看到的绘制结果）
+      // (X(t), Y(t)) 是 Desmos 参数方程的标准格式
+      {
+        id: `dft_plot_${index}`,
+        latex: `(${func_X}(t), ${func_Y}(t))`,
+        color: plotColor,
+        lineWidth: fillPolys.length > 0 ? 2 : 2.5,
+        lineOpacity: 1,
+        hidden: false,
+        parametricDomain: { min: "0", max: "2\\pi" }
+      }
+    );
+  });
+
+  const expressions = includeFill
+    ? [...contourExpressions, ...fillExpressions]
+    : contourExpressions;
+
+  return {
+    expressions,
+    explanation: includeFill && fillPolys.length > 0
+      ? `绘画已完成（${fillPolys.length} 个色块 + ${finalContours.length} 条黑色轮廓）。`
+      : includeFill
+        ? '绘画已完成。'
+        : `绘画已完成（${finalContours.length} 条黑色轮廓，仅勾线）。`,
+  };
+};
+
+// ─── 公共导出函数 ─────────────────────────────────────────────────────────────
+
+export function getNextHandDrawStrokeIndex(calculator: any): number {
+  if (!calculator || typeof calculator.getExpressions !== 'function') return 0;
+
+  let maxIdx = -1;
+  for (const expr of calculator.getExpressions()) {
+    const match = expr.id?.match(/^hd_plot_(\d+)$/);
+    if (match) maxIdx = Math.max(maxIdx, parseInt(match[1], 10));
+  }
+  return maxIdx + 1;
+}
+
+const throwIfAborted = (signal?: AbortSignal) => {
+  if (signal?.aborted) {
+    throw new DOMException('Drawing aborted', 'AbortError');
+  }
+};
+
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Drawing aborted', 'AbortError'));
+      return;
+    }
+    if (ms <= 0) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer);
+      reject(new DOMException('Drawing aborted', 'AbortError'));
+    }, { once: true });
+  });
+
+const prepareFourierExpression = (expr: any): any => {
+  const options = { ...expr };
+  if (expr.id && expr.id.startsWith('dft_plot')) {
+    options.parametricDomain = { min: '0', max: '2\\pi' };
+  }
+  if (expr.id && String(expr.id).startsWith('fill_poly_')) {
+    if (options.fill === undefined) options.fill = true;
+    if (options.fillOpacity === undefined) options.fillOpacity = 1;
+    if (options.lineOpacity === undefined) options.lineOpacity = 0;
+  }
+  return options;
+};
+
+const isFillExpression = (expr: any): boolean =>
+  String(expr.id || '').startsWith('fill_poly_');
+
+const getFillRowKey = (expr: any): number => {
+  const latex = String(expr.latex || '');
+  const matches = [...latex.matchAll(/\\left\(([-\d.]+),([-\d.]+)\\right\)/g)];
+  if (matches.length === 0) return 0;
+  const ys = matches.map(m => parseFloat(m[2])).filter(Number.isFinite);
+  if (ys.length === 0) return 0;
+  return Math.round(((Math.min(...ys) + Math.max(...ys)) / 2) * 80);
+};
+
+const getContourGroupKey = (expr: any): string | null => {
+  const id = String(expr.id || '');
+  const dft = id.match(/^dft_(?:plot|freq|real|imag|x|y)_(\d+)$/);
+  if (dft) return `dft_${dft[1]}`;
+  const hd = id.match(/^hd_(?:plot|freq|real|imag|x|y)_(\d+)$/);
+  if (hd) return `hd_${hd[1]}`;
+  return null;
+};
+
+const groupFillRows = (fills: any[]): any[][] => {
+  if (fills.length === 0) return [];
+
+  const rows: any[][] = [];
+  let currentRow = getFillRowKey(fills[0]);
+  let bucket: any[] = [];
+
+  for (const expr of fills) {
+    const rowKey = getFillRowKey(expr);
+    if (bucket.length > 0 && rowKey !== currentRow) {
+      rows.push(bucket);
+      bucket = [];
+      currentRow = rowKey;
+    }
+    bucket.push(expr);
+  }
+  if (bucket.length > 0) rows.push(bucket);
+  return rows;
+};
+
+const groupContourExpressions = (contours: any[]): any[][] => {
+  const groups = new Map<string, any[]>();
+  const order: string[] = [];
+
+  for (const expr of contours) {
+    const key = getContourGroupKey(expr);
+    if (!key) continue;
+    if (!groups.has(key)) {
+      groups.set(key, []);
+      order.push(key);
+    }
+    groups.get(key)!.push(expr);
+  }
+
+  return order.map(key => groups.get(key)!);
+};
+
+/** 填色完成后把可见轮廓线移到最上层，避免被 polygon 盖住 */
+const bringOutlinePlotsToFront = (calculator: any, contourGroups: any[][]) => {
+  if (typeof calculator.removeExpression !== 'function') return;
+
+  for (const group of contourGroups) {
+    const plot = group.find(e => /_(plot)_/.test(String(e.id || '')));
+    if (!plot?.id) continue;
+    const prepared = prepareFourierExpression(plot);
+    calculator.removeExpression({ id: prepared.id });
+    calculator.setExpression(prepared);
+  }
+};
+
+export type ProgressiveDrawPhase = 'fill' | 'outline';
+
+export type ProgressiveDrawOptions = {
+  clearFirst?: boolean;
+  rowBatchDelayMs?: number;
+  contourDelayMs?: number;
+  fillsPerTick?: number;
+  onProgress?: (done: number, total: number, phase: ProgressiveDrawPhase) => void;
+  signal?: AbortSignal;
+};
+
+const DESMOS_EXPR_BATCH = 80;
+
+const pushExprBatch = (calculator: any, chunk: any[]) => {
+  if (!chunk.length) return;
+  if (typeof calculator.setExpressions === 'function') {
+    calculator.setExpressions(chunk);
+    return;
+  }
+  chunk.forEach(expr => calculator.setExpression(expr));
+};
+
+const pushExprBatches = async (
+  calculator: any,
+  exprs: any[],
+  batchSize: number,
+  delayMs: number,
+  signal?: AbortSignal,
+  onChunk?: (count: number) => void,
+) => {
+  for (let i = 0; i < exprs.length; i += batchSize) {
+    throwIfAborted(signal);
+    const chunk = exprs.slice(i, i + batchSize);
+    pushExprBatch(calculator, chunk);
+    onChunk?.(chunk.length);
+    if (delayMs > 0 && i + batchSize < exprs.length) {
+      await sleep(delayMs, signal);
+    }
+  }
+};
+
+/** 先逐条勾勒轮廓，再逐行 polygon 填色（批量写入，避免卡死） */
+export async function applyFourierExpressionsProgressively(
+  calculator: any,
+  expressions: any[],
+  options: ProgressiveDrawOptions = {},
+): Promise<void> {
+  if (!calculator || expressions.length === 0) return;
+
+  const {
+    clearFirst = true,
+    contourDelayMs = 36,
+    onProgress,
+    signal,
+  } = options;
+
+  if (clearFirst) calculator.setBlank();
+
+  const prepared = expressions.map(prepareFourierExpression);
+  const fills = prepared.filter(isFillExpression);
+  const contours = prepared.filter(expr => !isFillExpression(expr));
+  const fillRows = groupFillRows(fills);
+  const contourGroups = groupContourExpressions(contours);
+  const totalSteps = fills.length + contourGroups.length;
+  let done = 0;
+
+  const hiddenContours = contours.filter(expr => expr.hidden);
+  const plotExprs = contourGroups
+    .map(group => group.find(expr => /_(plot)_/.test(String(expr.id || ''))))
+    .filter(Boolean) as any[];
+
+  const outlineWave = Math.max(3, Math.ceil(plotExprs.length / 10));
+  const turboFill = fills.length > 720;
+  const fillWaveSize = turboFill
+    ? Math.max(DESMOS_EXPR_BATCH, Math.ceil(fills.length / 8))
+    : DESMOS_EXPR_BATCH;
+
+  try {
+    // 1) 隐藏辅助公式一次性批量写入（用户无感知，避免逐条卡顿）
+    await pushExprBatches(calculator, hiddenContours, DESMOS_EXPR_BATCH, 0, signal);
+
+    // 2) 可见轮廓分批出现
+    for (let i = 0; i < plotExprs.length; i += outlineWave) {
+      throwIfAborted(signal);
+      const chunk = plotExprs.slice(i, i + outlineWave);
+      pushExprBatch(calculator, chunk);
+      done += chunk.length;
+      onProgress?.(done, totalSteps, 'outline');
+      if (i + outlineWave < plotExprs.length) {
+        await sleep(contourDelayMs, signal);
+      }
+    }
+
+    // 3) 填色：大量色块时分少数几波写入，否则按行批量写入
+    if (turboFill) {
+      await pushExprBatches(
+        calculator,
+        fills,
+        fillWaveSize,
+        20,
+        signal,
+        count => {
+          done += count;
+          onProgress?.(done, totalSteps, 'fill');
+        },
+      );
+    } else {
+      for (const row of fillRows) {
+        throwIfAborted(signal);
+        pushExprBatch(calculator, row);
+        done += row.length;
+        onProgress?.(done, totalSteps, 'fill');
+        if (fillRows.length > 1) {
+          await sleep(10, signal);
+        }
+      }
+    }
+
+    throwIfAborted(signal);
+    bringOutlinePlotsToFront(calculator, contourGroups);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw error;
+    }
+    throw error;
+  }
+}
+
+/** 立即写入全部表达式（无动画） */
+export function applyFourierExpressionsToCalculator(
+  calculator: any,
+  expressions: any[],
+) {
+  if (!calculator) return;
+  calculator.setBlank();
+  const prepared = expressions.map(prepareFourierExpression);
+  for (let i = 0; i < prepared.length; i += DESMOS_EXPR_BATCH) {
+    pushExprBatch(calculator, prepared.slice(i, i + DESMOS_EXPR_BATCH));
+  }
+}
+
+/**
+ * processImageToFourier — 处理图片文件，生成 Desmos 傅里叶表达式
+ *
+ * 【使用流程】
+ * 1. 用户上传图片文件
+ * 2. FileReader 把文件读成 Data URL（base64 字符串）
+ * 3. 创建 Image 对象加载图片
+ * 4. 把图片绘制到 Canvas
+ * 5. 调用 generateFourierExpressions 生成表达式
+ *
+ * @param file - 用户选择的图片文件（File 对象）
+ * @returns Promise：异步操作，完成后包含 expressions 和 explanation
+ */
+export const processImageToFourier = (
+  file: File,
+  options: ImageFourierOptions = {},
+): Promise<{
+  expressions: any[],
+  explanation: string
+}> => {
+  // 返回一个 Promise（异步操作的容器）
+  // Promise 有两个回调：resolve（成功）和 reject（失败）
+  return new Promise((resolve, reject) => {
+
+    // FileReader：浏览器 API，把文件读成各种格式
+    const reader = new FileReader();
+
+    // readAsDataURL 完成后触发 onload
+    reader.onload = (event) => {
+      // 创建一个 HTML Image 对象
+      const img = new Image();
+
+      // 图片加载完成后触发
+      img.onload = () => {
+        // 创建 Canvas（内存中的画布，不显示在页面上）
+        const canvas = document.createElement('canvas');
+
+        // V30 优化：限制最大分辨率为 1024px，在细节和性能之间取平衡
+        const MAX_DIM = 1024;
+        // 计算缩放比例（如果图片比 1024px 大，则缩小；比 1024px 小则不放大）
+        const scale = Math.min(1, MAX_DIM / Math.max(img.width, img.height));
+        canvas.width  = img.width  * scale;
+        canvas.height = img.height * scale;
+
+        // 获取 2D 绘图上下文
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { reject('No ctx'); return; }
+
+        // 先填充白色背景（透明 PNG 图片的透明区域会变成白色）
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // 把图片画到 canvas（自动缩放到 canvas 大小）
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        // 生成傅里叶表达式
+        resolve(generateFourierExpressions(ctx, canvas.width, canvas.height, options));
+      };
+
+      // 把 FileReader 读取到的 base64 字符串赋给 img.src，触发图片加载
+      img.src = event.target?.result as string;
+    };
+
+    // 以 Data URL（base64）格式读取文件
+    reader.readAsDataURL(file);
+  });
+};
+
+/**
+ * processEmojiToFourier — 处理 Emoji 字符，生成 Desmos 傅里叶表达式
+ *
+ * 【原理】
+ * 把 Emoji 文字渲染到 Canvas 上，然后用同样的管线处理。
+ * 相当于把 Emoji 当作一张图片来处理。
+ * 浏览器内置的字体渲染会把 Emoji 画成彩色图形，
+ * 我们再从中提取轮廓。
+ *
+ * @param emoji - Emoji 字符（如 "🦋"、"🍎"）
+ * @returns Promise：完成后包含 expressions 和 explanation
+ */
+export const processEmojiToFourier = (
+  emoji: string,
+  options: ImageFourierOptions = {},
+): Promise<{
+  expressions: any[],
+  explanation: string
+}> => {
+  return new Promise((resolve) => {
+    // 创建 1024×1024 的 Canvas（高分辨率保证 Emoji 细节清晰）
+    const canvas = document.createElement('canvas');
+    const size = 1024;
+    canvas.width = size;
+    canvas.height = size;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      // 极少数情况下（低端设备内存不足）getContext 可能返回 null
+      resolve({ expressions: [], explanation: 'Failed to create canvas' });
+      return;
+    }
+
+    // 填充白色背景
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, size, size);
+
+    // 把 Emoji 绘制到 Canvas 中央，字体大小约为 canvas 的 75%（768px）
+    ctx.font = `${size * 0.75}px serif`; // serif 字体更完整地显示 Emoji
+    ctx.textAlign = 'center';            // 水平居中
+    ctx.textBaseline = 'middle';         // 垂直居中
+    ctx.fillStyle = 'black';             // 黑色（边缘检测基于亮度差）
+
+    // 把 Emoji 绘制在画布中央（稍微偏下 5% 以补偿不同字体的基线差异）
+    ctx.fillText(emoji, size / 2, size / 2 + size * 0.05);
+
+    // 调用核心处理函数
+    resolve(generateFourierExpressions(ctx, size, size, options));
+  });
+};
+
+/**
+ * processImageToPoints — processImageToFourier 的别名
+ *
+ * 保留这个名字是为了兼容项目其他地方的旧代码引用。
+ * 实际上它们是完全相同的函数。
+ */
+export const processImageToPoints = processImageToFourier;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HAND-DRAWN PATH  →  FOURIER  (skip image/edge step entirely)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const DRAW_COLOR_PRESETS = [
+  SMART_DRAW_OUTLINE_COLOR, '#2563eb', '#dc2626', '#16a34a', '#ea580c', '#9333ea',
+  '#0891b2', '#db2777', '#ca8a04', '#4f46e5',
+];
+
+export type HandDrawStroke = {
+  points: { x: number; y: number }[];
+  color: string;
+};
+
+const resamplePathByDistance = (points: Point[], minDist: number): Point[] => {
+  if (points.length < 2) return points;
+
+  const result: Point[] = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    const last = result[result.length - 1];
+    const d = Math.hypot(points[i].x - last.x, points[i].y - last.y);
+    if (d >= minDist) result.push(points[i]);
+  }
+
+  const tail = points[points.length - 1];
+  const last = result[result.length - 1];
+  if (Math.hypot(tail.x - last.x, tail.y - last.y) > minDist * 0.2) {
+    result.push(tail);
+  }
+
+  return result;
+};
+
+const resamplePathByArcLength = (points: Point[], targetCount: number): Point[] => {
+  if (points.length <= targetCount || targetCount < 2) return points;
+
+  const cumulative: number[] = [0];
+  for (let i = 1; i < points.length; i++) {
+    cumulative.push(
+      cumulative[i - 1] + Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y),
+    );
+  }
+
+  const total = cumulative[cumulative.length - 1];
+  if (total <= 0) return points;
+
+  const result: Point[] = [];
+  for (let j = 0; j < targetCount; j++) {
+    const target = (total * j) / (targetCount - 1);
+    let seg = 0;
+    while (seg < cumulative.length - 2 && cumulative[seg + 1] < target) seg++;
+
+    const segStart = cumulative[seg];
+    const segEnd = cumulative[seg + 1];
+    const t = segEnd > segStart ? (target - segStart) / (segEnd - segStart) : 0;
+    const a = points[seg];
+    const b = points[Math.min(seg + 1, points.length - 1)];
+    result.push({
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t,
+    });
+  }
+
+  return result;
+};
+
+const resamplePathUniform = (points: Point[], targetCount: number): Point[] => {
+  if (points.length <= targetCount) return points;
+
+  const result: Point[] = [];
+  const step = (points.length - 1) / (targetCount - 1);
+  for (let i = 0; i < targetCount; i++) {
+    result.push(points[Math.round(i * step)]);
+  }
+  return result;
+};
+
+/** Chaikin 角点切割 — 消除手绘微抖，保留整体形状 */
+const chaikinSmooth = (points: Point[], closed: boolean, iterations = 1): Point[] => {
+  let current = points;
+  for (let iter = 0; iter < iterations; iter++) {
+    if (current.length < 3) break;
+
+    const next: Point[] = [];
+    const segments = closed ? current.length : current.length - 1;
+
+    for (let i = 0; i < segments; i++) {
+      const p0 = current[i];
+      const p1 = current[(i + 1) % current.length];
+      next.push(
+        { x: 0.75 * p0.x + 0.25 * p1.x, y: 0.75 * p0.y + 0.25 * p1.y },
+        { x: 0.25 * p0.x + 0.75 * p1.x, y: 0.25 * p0.y + 0.75 * p1.y },
+      );
+    }
+
+    if (!closed) {
+      next.unshift(current[0]);
+      next.push(current[current.length - 1]);
+    }
+
+    current = next;
+  }
+  return current;
+};
+
+const smoothPathRepeated = (points: Point[], passes: number): Point[] => {
+  let current = points;
+  for (let i = 0; i < passes; i++) {
+    current = smoothPoints(current);
+  }
+  return current;
+};
+
+const prepareHandDrawPathForDFT = (points: Point[], isClosed: boolean): Point[] => {
+  if (isClosed) {
+    const reversed = [...points].reverse().slice(1, -1);
+    const tip = points[points.length - 1];
+    const root = points[0];
+    return [...points, tip, tip, ...reversed, root, root];
+  }
+
+  // 开放路径：往返闭合，避免 DFT 首尾硬连产生 Gibbs 尖刺
+  const reversed = [...points].reverse().slice(1, -1);
+  const tip = points[points.length - 1];
+  const root = points[0];
+  return [...points, tip, tip, tip, ...reversed, root, root, root];
+};
+
+const chooseHandDrawCoeffCount = (
+  numPoints: number,
+  pathLength: number,
+  isClosed: boolean,
+): number => {
+  const maxK = Math.floor((numPoints - 1) / 2);
+  const lengthFactor = Math.ceil(pathLength * (isClosed ? 10 : 8));
+  const detailCap = isClosed ? 88 : 64;
+  return Math.max(10, Math.min(maxK, detailCap, lengthFactor));
+};
+
+/** 频域高斯低通 — 抑制高频尖刺（Gibbs 振铃） */
+const attenuateFourierCoeffs = (
+  coeffs: { freq: number; re: number; im: number }[],
+  cutoff: number,
+): { freq: number; re: number; im: number }[] => {
+  const safeCutoff = Math.max(4, cutoff);
+  return coeffs.map(c => {
+    const absF = Math.abs(c.freq);
+    if (absF === 0) return c;
+    const weight = Math.exp(-0.5 * (absF / safeCutoff) ** 2);
+    return { ...c, re: c.re * weight, im: c.im * weight };
+  });
+};
+
+const preprocessHandDrawPath = (
+  rawPath: Point[],
+): { points: Point[]; pathLength: number; isClosed: boolean } => {
+  const pathLength = calculatePathLength(rawPath);
+  const minDist = Math.max(0.003, pathLength / 500);
+
+  let pts = resamplePathByDistance(rawPath, minDist);
+
+  const start = pts[0];
+  const end = pts[pts.length - 1];
+  const gap = Math.hypot(end.x - start.x, end.y - start.y);
+  const isClosed = gap < Math.max(0.06, pathLength * 0.05);
+
+  pts = chaikinSmooth(pts, isClosed, isClosed ? 1 : 2);
+  pts = smoothPathRepeated(pts, isClosed ? 2 : 3);
+
+  const TARGET = isClosed ? 640 : 520;
+  if (pts.length > TARGET) {
+    pts = resamplePathByArcLength(pts, TARGET);
+  }
+
+  return { points: pts, pathLength, isClosed };
+};
+
+export const processDrawnPathToFourier = (
+  rawPath: { x: number; y: number }[],
+  strokeIndex = 0,
+  color = SMART_DRAW_OUTLINE_COLOR,
+): { expressions: any[]; explanation: string } => {
+  if (rawPath.length < 3) return { expressions: [], explanation: '路径太短，请多画一些。' };
+
+  const pathLength = calculatePathLength(rawPath);
+  if (pathLength < 0.04) return { expressions: [], explanation: '路径太短，请多画一些。' };
+
+  const { points: pts, pathLength: smoothLength, isClosed } = preprocessHandDrawPath(rawPath as Point[]);
+  if (pts.length < 4) return { expressions: [], explanation: '路径太短，请多画一些。' };
+
+  const processedPts = prepareHandDrawPathForDFT(pts, isClosed);
+  const K = chooseHandDrawCoeffCount(processedPts.length, smoothLength, isClosed);
+  let coeffs = computeDFT(processedPts, K);
+  coeffs = attenuateFourierCoeffs(coeffs, K * 0.5);
+
+  const L_freq = coeffs.map(c => c.freq);
+  const L_real = coeffs.map(c => c.re.toFixed(5));
+  const L_imag = coeffs.map(c => c.im.toFixed(5));
+
+  const s = strokeIndex;
+  const expressions: any[] = [
+    { id: `hd_freq_${s}`, latex: `F_{hd${s}}=[${L_freq.join(',')}]`, hidden: true },
+    { id: `hd_real_${s}`, latex: `R_{hd${s}}=[${L_real.join(',')}]`, hidden: true },
+    { id: `hd_imag_${s}`, latex: `I_{hd${s}}=[${L_imag.join(',')}]`, hidden: true },
+    {
+      id: `hd_x_${s}`,
+      latex: `X_{hd${s}}(t)=\\operatorname{total}(R_{hd${s}}\\cos(F_{hd${s}}t)-I_{hd${s}}\\sin(F_{hd${s}}t))`,
+      hidden: true,
+    },
+    {
+      id: `hd_y_${s}`,
+      latex: `Y_{hd${s}}(t)=\\operatorname{total}(R_{hd${s}}\\sin(F_{hd${s}}t)+I_{hd${s}}\\cos(F_{hd${s}}t))`,
+      hidden: true,
+    },
+    {
+      id: `hd_plot_${s}`,
+      latex: `(X_{hd${s}}(t),Y_{hd${s}}(t))`,
+      color,
+      lineWidth: 2.5,
+      hidden: false,
+      parametricDomain: { min: '0', max: '2\\pi' },
+    },
+  ];
+
+  return { expressions, explanation: '手绘已转换为傅里叶参数方程。' };
+};
