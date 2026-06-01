@@ -26,8 +26,8 @@ export function normalizeDesmosTagsInText(text: string): string {
 
 /**
  * 规范化 Desmos 公式（注入画板与聊天展示共用）
- * - 逗号域条件 → \left\{...\right\}
- * - 去掉 \left\{ 前多余逗号、末尾孤立逗号
+ * - 统一为 Desmos 原生英文键盘风格：| |、( )、{ }、<=、>=
+ * - 去掉逗号域、积分 dx 前逗号等 AI 常见笔误
  */
 export function normalizeDesmosFormulaLatex(formula: string): string {
   let clean = formula
@@ -39,39 +39,45 @@ export function normalizeDesmosFormulaLatex(formula: string): string {
   // \int ... x^2, dx → 去掉微分符号前的逗号
   clean = clean.replace(/,\s*(d[a-zA-Zθωπ]+)\b/g, ' $1');
 
-  // AI 常写 "x^2, \left\{..." — 去掉 \left\{ 前的逗号
-  clean = clean.replace(/,\s*(\\left\s*\\{)/g, ' $1');
+  // AI 常写 "x^2, {..." — 去掉域条件前的逗号
+  clean = clean.replace(/,\s*(\{)/g, ' $1');
 
-  // AI 常写 f(x) \{0\le x\le 1\} — 补全为 \left\{...\right\}（勿破坏已有 \left\{...\right\}）
-  clean = clean.replace(/\\{([^}]+)\}/g, (match, inner, offset, full) => {
-    const before = full.slice(Math.max(0, offset - 6), offset);
-    if (before.endsWith('left\\') || before.endsWith('left')) return match;
-    if (before.endsWith('_') || before.endsWith('^')) return match;
-    if (/^\d+$/.test(String(inner).trim())) return match;
-    if (/\\right\s*\\?\}$/.test(full.slice(offset + match.length))) return match;
-    const domain = String(inner).trim().replace(/\\+$/g, '');
-    return `\\left\\{${domain}\\right\\}`;
-  });
+  // 域/分段：保留原生花括号 {0<=x<=1}，勿升级为 \left\{...\right\}
+  // （piecewise 与 restriction 均用 Desmos 官方 { } 写法）
 
-  if (clean.includes(',') && !clean.includes('\\{')) {
+  if (clean.includes(',') && !clean.includes('{')) {
     if (/[<>]=?|\\le(?![a-zA-Z])|\\ge(?![a-zA-Z])/.test(clean)) {
       const lastCommaIdx = clean.lastIndexOf(',');
       if (lastCommaIdx !== -1) {
         const mainPart = clean.substring(0, lastCommaIdx).trim();
         const conditionPart = clean.substring(lastCommaIdx + 1).trim();
         if (conditionPart) {
-          clean = `${mainPart} \\left\\{${conditionPart}\\right\\}`;
+          clean = `${mainPart} {${conditionPart}}`;
         }
       }
     }
   }
 
-  // f(x)=x^2, 或 integrand 后多余逗号
   clean = clean.replace(/,\s*(\\right\\}|\\}|$)/g, ' $1');
   clean = clean.replace(/,\s*$/, '').trim();
 
   clean = wrapIntegralIntegrandInParens(clean);
+  clean = toNativeDesmosKeyboardSyntax(clean);
   return clean;
+}
+
+/** Desmos 画板：优先原生英文键盘符号（非 LaTeX 修饰括号/绝对值/不等号） */
+function toNativeDesmosKeyboardSyntax(s: string): string {
+  let out = s;
+  out = out.replace(/\\left\s*\|/g, '|').replace(/\\right\s*\|/g, '|');
+  out = out.replace(/\\left\s*\(/g, '(').replace(/\\right\s*\)/g, ')');
+  out = out.replace(/\\left\s*\\{/g, '{').replace(/\\right\s*\\}/g, '}');
+  out = out.replace(/\\lbrace/g, '{').replace(/\\rbrace/g, '}');
+  out = out.replace(/\\le(?![a-zA-Z])/g, '<=');
+  out = out.replace(/\\ge(?![a-zA-Z])/g, '>=');
+  out = out.replace(/\\leq(?![a-zA-Z])/g, '<=');
+  out = out.replace(/\\geq(?![a-zA-Z])/g, '>=');
+  return out;
 }
 
 const isBalancedParenExpr = (s: string): boolean => {
@@ -135,16 +141,15 @@ function wrapIntegralIntegrandInParens(formula: string): string {
   );
 }
 
-/** 将 Desmos LaTeX 转为 KaTeX 可渲染的展示用 LaTeX（仅用于聊天蓝框，不写入画板） */
+/** 将 Desmos 原生语法转为 KaTeX 可渲染的展示用 LaTeX（仅聊天蓝框，不写入画板） */
 export function desmosLatexToKatexDisplay(desmosLatex: string): string {
   const s = normalizeDesmosFormulaLatex(
     desmosLatex.replace(/<\s*\/?\s*desmos\s*>/gi, ''),
   );
 
-  // 勿用 /\\le/g — 会误伤 \left、\leq；仅匹配独立 \le / \ge
   return s
-    .replace(/\\le(?![a-zA-Z])/g, ' \\le ')
-    .replace(/\\ge(?![a-zA-Z])/g, ' \\ge ')
+    .replace(/<=/g, ' \\le ')
+    .replace(/>=/g, ' \\ge ')
     .replace(/([a-zA-Z])_(\d+)/g, '$1_{$2}')
     .replace(/\s{2,}/g, ' ')
     .trim();
