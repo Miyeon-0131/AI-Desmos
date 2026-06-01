@@ -63,7 +63,25 @@ export function normalizeDesmosFormulaLatex(formula: string): string {
 
   clean = wrapIntegralIntegrandInParens(clean);
   clean = toNativeDesmosKeyboardSyntax(clean);
+  clean = fixDesmosPointAndCoordinateSyntax(clean);
   return clean;
+}
+
+/** 修复点坐标 / polygon / 参数式中 \left( 嵌套导致的 Desmos 报错 */
+function fixDesmosPointAndCoordinateSyntax(s: string): string {
+  let out = s.replace(/\\operatorname\s*\{\s*polygon\s*\}\s*\(/gi, 'polygon(');
+
+  // 反复剥掉坐标对上的 \left(...\right) 或 ((x,y) 双重包裹
+  for (let i = 0; i < 8; i++) {
+    const prev = out;
+    out = out.replace(/\\left\s*\(([^()]*,[^()]*)\)\s*\\right\s*\)/g, '($1)');
+    out = out.replace(/\(\s*\(([^()]*,[^()]*)\)\s*\)/g, '($1)');
+    if (out === prev) break;
+  }
+
+  out = out.replace(/polygon\s*\(\s*\(/g, 'polygon(');
+  out = out.replace(/\\left\s*\(/g, '(').replace(/\\right\s*\)/g, ')');
+  return out.trim();
 }
 
 /** Desmos 画板：优先原生英文键盘符号（非 LaTeX 修饰括号/绝对值/不等号） */
