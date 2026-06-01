@@ -612,17 +612,17 @@ const fmtDesmosNum = (n: number): string => {
 };
 
 const fmtDesmosPoint = (x: number, y: number): string =>
-  `(${fmtDesmosNum(x)},${fmtDesmosNum(y)})`;
+  `\\left(${fmtDesmosNum(x)},${fmtDesmosNum(y)}\\right)`;
 
 /**
- * Desmos polygon 语法：每个顶点必须是原生 (x,y)，至少 3 个顶点。
- * 例：polygon((-1,1),(1,1),(0,-1)) — 禁止 \left(\left(-1,1\right),...\right)
+ * Desmos polygon 语法：每个顶点必须是 (x,y) 二元坐标，至少 3 个顶点。
+ * 例：\operatorname{polygon}\left(\left(-1,1\right),\left(1,1\right),\left(0,-1\right)\right)
  */
 const buildPolygonLatex = (points: Point[]): string => {
   const valid = points.filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
   if (valid.length < 3) return '';
   const pts = valid.map(p => fmtDesmosPoint(p.x, p.y)).join(',');
-  return `polygon(${pts})`;
+  return `\\operatorname{polygon}\\left(${pts}\\right)`;
 };
 
 const canvasRectToDesmos = (
